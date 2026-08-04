@@ -1,0 +1,15 @@
+# data/
+../data
+outputs/
+*.npz
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.DS_Store
+.venv/
+env/
+
+# scratch / local test files
+smoke_test.py
+test_*.jsonl
+test_*.csv
