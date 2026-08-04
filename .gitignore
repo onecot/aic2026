@@ -8,6 +8,7 @@ __pycache__/
 .DS_Store
 .venv/
 env/
+AGENTS.md
 
 # scratch / local test files
 smoke_test.py
