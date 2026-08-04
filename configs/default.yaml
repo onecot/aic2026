@@ -1,17 +1,17 @@
 # Root directory containing organizer-provided, read-only data.
-data_root: ../../data
+data_root: ../data
 
 # Locations of the feature, mapping, image, metadata, and object data.
 data:
-  features_dir: ../../data/clip-features-32   # per-video CLIP ViT-B/32 .npy
-  mapping_dir:  ../../data/map-keyframes      # per-video keyframe→frame_idx .csv
-  metadata_dir: ../../data/media-info         # per-video YouTube metadata .json
-  keyframes_dir: ../../data/keyframes
-  objects_dir: ../../data/objects
+  features_dir: ../data/clip-features-32   # per-video CLIP ViT-B/32 .npy
+  mapping_dir:  ../data/map-keyframes      # per-video keyframe→frame_idx .csv
+  metadata_dir: ../data/media-info         # per-video YouTube metadata .json
+  keyframes_dir: ../data/keyframes
+  objects_dir: ../data/objects
 
 # Settings for the generated embedding index artifact.
 index:
-  path: ../../data/index.npz
+  path: ../data/index.npz
   normalize: true
 
 # Text-encoder model and execution-device settings.
@@ -27,4 +27,4 @@ retrieve:
 # Known-item-search output settings.
 kis:
   max_results: 100
-  output_path: ../../outputs/kis_submission.csv
+  output_path: outputs/kis_submission.csv
