@@ -15,11 +15,18 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
 ]
+dependencies = [
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
 ]
+
+[project.scripts]
+aic2026 = "aic2026.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

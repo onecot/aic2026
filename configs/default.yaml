@@ -11,3 +11,7 @@
 project:
   name: aic2026
   version: 0.1.0
+
+data:
+  # Path to the raw BTC-provided dataset root, relative to the repo root.
+  raw_dir: data/raw/aic2026_batch1
