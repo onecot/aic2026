@@ -1,0 +1,13 @@
+# Default configuration for the AIC 2026 project.
+#
+# This is the base layer of the configuration precedence model:
+#   base/default configuration
+#         -> environment or experiment configuration
+#         -> explicit CLI overrides
+#
+# Processing stages and experiment parameters will be added here
+# as the pipeline is implemented.
+
+project:
+  name: aic2026
+  version: 0.1.0

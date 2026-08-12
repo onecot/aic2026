@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# Tooling / type checkers
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.dmypy.json
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+
+# Local datasets and artifacts
+data/
+datasets/
+artifacts/
+runs/
+outputs/
+*.parquet
+*.h5
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
