@@ -226,21 +226,41 @@ key for retrieval:
 - `norms.npy[p]` → the L2 norm of that row, enabling cosine score
   computation without reading the raw dataset.
 
-### Manifest (minimal metadata)
+### Manifest and embedding identity
 
 `IndexManifest` is a frozen dataclass with `to_dict`/`from_dict` (JSON-
-safe) that records:
+safe). `INDEX_SCHEMA_VERSION = "1.1"` adds `embedding_space`, so every new
+artifact records the identity required to validate a query before cosine
+comparison:
 
-- `schema_version` — must equal `INDEX_SCHEMA_VERSION = "1.0"`.
+- `schema_version` — current artifacts use `"1.1"`.
 - `artifact_id` — unique run identity for the artifact.
 - `score_metric` — supported similarity metric (currently `cosine`).
-- `embedding_dim` (`D`) and `embedding_dtype` — shape/type of each vector.
+- `embedding_dim` (`D`) and `embedding_dtype` — shape/type of each stored
+  vector.
+- `embedding_space` — backend, model identifier, optional checkpoint,
+  stable embedding-space identifier, dimension, output dtype, normalization
+  convention, preprocessing/tokenization revision, and optional model
+  implementation version.
 - `num_rows` (`N`) and `num_videos` — sizes of the indexed set.
 - `created_at` — ISO-8601 timestamp (run identity).
 - `source_dataset_id` — identifier of the source dataset (e.g.
   `aic2026_batch1`), storage-layout independent.
 - `canonical_schema_version` — canonical schema the `frames.ndjson`
   records conform to.
+
+The model-independent `aic2026.embeddings` boundary defines
+`EmbeddingSpace`, `Embedding` (with `kind` `image` or `text`), and the
+`EmbeddingEncoder` protocol (`encode_image`, `encode_text`). It imports no
+model backend libraries. A query embedding may be compared with an index only
+when its complete `EmbeddingSpace` exactly equals the manifest's space;
+matching dimension alone is insufficient.
+
+For practical compatibility, a version 1.0 manifest without
+`embedding_space` is readable as an explicit `legacy/unknown` space derived
+from its dimension and dtype. Raw vectors are accepted only for this legacy
+case. Version 1.1 model-identified indexes require an `Embedding` query and
+fail clearly on a different model/space.
 
 ### Serialization helpers
 
@@ -263,7 +283,8 @@ safe) that records:
 `INDEX_SCHEMA_VERSION` uses the same convention as the canonical schema:
 bump the minor number for additive/backward-compatible changes and the
 major number for breaking changes. `read_manifest` and
-`IndexManifest.from_dict` reject schemas other than the current one.
+`IndexManifest.from_dict` accept versions 1.0 and 1.1 during the 1.1
+migration; unknown versions are rejected.
 
 ### What retrieval/evaluation may depend on
 

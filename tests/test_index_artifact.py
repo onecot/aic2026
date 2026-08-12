@@ -65,7 +65,7 @@ def _manifest(**overrides) -> IndexManifest:
 def test_schema_version_constant():
     """The artifact schema version is defined and stable."""
     assert isinstance(INDEX_SCHEMA_VERSION, str)
-    assert INDEX_SCHEMA_VERSION == "1.0"
+    assert INDEX_SCHEMA_VERSION == "1.1"
     assert "cosine" in SUPPORTED_SCORE_METRICS
 
 
@@ -86,7 +86,8 @@ def test_manifest_valid_construction():
 
 
 def test_manifest_rejects_unsupported_schema_version():
-    """An unknown major schema version is rejected."""
+    """An unknown schema version is rejected while 1.0 remains readable."""
+    assert _manifest(schema_version="1.0").embedding_space.backend == "legacy"
     with pytest.raises(ValueError):
         _manifest(schema_version="2.0")
     with pytest.raises(ValueError):

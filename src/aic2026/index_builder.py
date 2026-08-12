@@ -21,6 +21,7 @@ import numpy as np
 
 from aic2026.dataset import Dataset
 from aic2026.index_artifact import (
+    INDEX_SCHEMA_VERSION,
     IndexManifest,
     write_manifest,
     FRAMES_FILENAME,
@@ -28,6 +29,7 @@ from aic2026.index_artifact import (
     NORMS_FILENAME,
 )
 from aic2026.canonical import ClipEmbedding, CANONICAL_SCHEMA_VERSION
+from aic2026.embeddings import EmbeddingSpace, legacy_embedding_space
 
 
 @dataclass
@@ -37,6 +39,7 @@ class _BuildMeta:
     embedding_dim: int
     embedding_dtype: str
     videos: list[dict]
+    embedding_space: dict | None = None
 
 
 _CHECKPOINT_FILENAME = ".checkpoint.json"
@@ -113,6 +116,7 @@ def build_index(
     resume: bool = True,
     stop_after_rows: Optional[int] = None,
     video_ids: Optional[Iterable[str]] = None,
+    embedding_space: EmbeddingSpace | None = None,
 ) -> IndexManifest:
     """Build an index artifact from a canonical Dataset.
 
@@ -125,6 +129,10 @@ def build_index(
         resume: if True, attempt to resume a partial build when present.
         stop_after_rows: optional testing hook to stop after writing N rows (no manifest written).
         video_ids: optional iterable of video ids to restrict the build.
+        embedding_space: explicit identity of the source embeddings. It must
+            match the dataset matrix dimension and dtype. When omitted, the
+            artifact is explicitly marked as a legacy/unknown space for
+            backward compatibility with BTC Batch 1 features.
 
     Returns:
         IndexManifest (final manifest). If stop_after_rows is set and reached, no manifest is written and the function returns a manifest-like object not persisted.
@@ -144,15 +152,39 @@ def build_index(
             embedding_dim=int(meta_payload["embedding_dim"]),
             embedding_dtype=str(meta_payload["embedding_dtype"]),
             videos=meta_payload["videos"],
+            embedding_space=meta_payload.get("embedding_space"),
         )
     else:
         meta = _inspect_dataset(dataset, video_ids=video_ids)
+
+    # Resolve once and persist in build metadata so a resumed build cannot
+    # silently finish with a different model identity.
+    stored_space = (
+        EmbeddingSpace.from_dict(meta.embedding_space)
+        if meta.embedding_space is not None
+        else legacy_embedding_space(meta.embedding_dim, meta.embedding_dtype)
+    )
+    if embedding_space is not None and embedding_space != stored_space:
+        raise ValueError("provided embedding_space does not match the resumable build metadata")
+    resolved_space = embedding_space or stored_space
+    if resolved_space.embedding_dim != meta.embedding_dim:
+        raise ValueError(
+            f"embedding_space dim {resolved_space.embedding_dim} != dataset dim {meta.embedding_dim}"
+        )
+    if np.dtype(resolved_space.output_dtype) != np.dtype(meta.embedding_dtype):
+        raise ValueError(
+            "embedding_space output_dtype "
+            f"{resolved_space.output_dtype} != dataset dtype {meta.embedding_dtype}"
+        )
+    if not (resume and meta_path.exists()):
+        meta.embedding_space = resolved_space.to_dict()
         _write_json_atomic(meta_path, {
             "num_rows": meta.num_rows,
             "num_videos": meta.num_videos,
             "embedding_dim": meta.embedding_dim,
             "embedding_dtype": meta.embedding_dtype,
             "videos": meta.videos,
+            "embedding_space": meta.embedding_space,
         })
 
     # Prepare memmaps
@@ -283,7 +315,7 @@ def build_index(
 
     # Build and write manifest atomically
     manifest = IndexManifest(
-        schema_version="1.0",
+        schema_version=INDEX_SCHEMA_VERSION,
         artifact_id=artifact_id,
         score_metric=score_metric,
         embedding_dim=D,
@@ -293,6 +325,7 @@ def build_index(
         created_at=datetime.utcnow().isoformat() + "Z",
         source_dataset_id=str(getattr(dataset, "raw_root", "unknown")),
         canonical_schema_version=CANONICAL_SCHEMA_VERSION,
+        embedding_space=resolved_space,
     )
     # atomic write
     tmp_manifest = artifact_dir / ("manifest.json.tmp")

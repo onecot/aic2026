@@ -38,18 +38,21 @@ norms, so it never needs to read the raw dataset.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Any
+from typing import Any
 
 import numpy as np
 
 from aic2026.canonical import KeyframeTiming
+from aic2026.embeddings import EmbeddingSpace, legacy_embedding_space
 
-#: Schema version of the index artifact. Bump the minor number on
-#: additive/backward-compatible changes, the major number on breaking
-#: changes (see ``docs/data-contracts.md``).
-INDEX_SCHEMA_VERSION = "1.0"
+#: Schema version of the index artifact. Version 1.1 adds explicit
+#: embedding-space metadata. Version 1.0 manifests remain readable as
+#: explicitly marked legacy/unknown spaces.
+INDEX_SCHEMA_VERSION = "1.1"
+SUPPORTED_INDEX_SCHEMA_VERSIONS = ("1.0", INDEX_SCHEMA_VERSION)
 
 #: Relative filenames within an artifact directory.
 MANIFEST_FILENAME = "manifest.json"
@@ -87,6 +90,8 @@ class IndexManifest:
           ``aic2026_batch1`` (storage-layout independent).
         - canonical_schema_version: canonical schema version the
           ``frames.ndjson`` records conform to.
+        - embedding_space: model/backend identity and all metadata required
+          to determine whether a query can be compared with this index.
     """
 
     schema_version: str
@@ -99,12 +104,13 @@ class IndexManifest:
     created_at: str
     source_dataset_id: str
     canonical_schema_version: str
+    embedding_space: EmbeddingSpace | None = None
 
     def __post_init__(self) -> None:
         _require(
-            self.schema_version == INDEX_SCHEMA_VERSION,
+            self.schema_version in SUPPORTED_INDEX_SCHEMA_VERSIONS,
             f"unsupported artifact schema version {self.schema_version!r}; "
-            f"expected {INDEX_SCHEMA_VERSION!r}",
+            f"supported: {SUPPORTED_INDEX_SCHEMA_VERSIONS}",
         )
         _require(isinstance(self.artifact_id, str) and self.artifact_id != "", "artifact_id required")
         _require(
@@ -114,6 +120,23 @@ class IndexManifest:
         )
         _require(isinstance(self.embedding_dim, int) and self.embedding_dim >= 1, "embedding_dim must be >= 1")
         _require(isinstance(self.embedding_dtype, str) and self.embedding_dtype != "", "embedding_dtype required")
+        try:
+            embedding_dtype = np.dtype(self.embedding_dtype)
+        except TypeError as exc:
+            raise ValueError(f"invalid embedding_dtype {self.embedding_dtype!r}") from exc
+        _require(np.issubdtype(embedding_dtype, np.floating), "embedding_dtype must be a floating numpy dtype")
+        embedding_space = self.embedding_space
+        if embedding_space is None:
+            embedding_space = legacy_embedding_space(self.embedding_dim, embedding_dtype.name)
+            object.__setattr__(self, "embedding_space", embedding_space)
+        _require(
+            embedding_space.embedding_dim == self.embedding_dim,
+            "embedding_space.embedding_dim must match embedding_dim",
+        )
+        _require(
+            np.dtype(embedding_space.output_dtype) == embedding_dtype,
+            "embedding_space.output_dtype must match embedding_dtype",
+        )
         _require(isinstance(self.num_rows, int) and self.num_rows >= 0, "num_rows must be >= 0")
         _require(isinstance(self.num_videos, int) and self.num_videos >= 0, "num_videos must be >= 0")
         _require(isinstance(self.created_at, str) and self.created_at != "", "created_at required")
@@ -129,6 +152,9 @@ class IndexManifest:
         Returns:
             - Dict representation including the schema version.
         """
+        embedding_space = self.embedding_space
+        if embedding_space is None:
+            raise ValueError("embedding_space must be resolved before serialization")
         return {
             "schema_version": self.schema_version,
             "artifact_id": self.artifact_id,
@@ -140,10 +166,11 @@ class IndexManifest:
             "created_at": self.created_at,
             "source_dataset_id": self.source_dataset_id,
             "canonical_schema_version": self.canonical_schema_version,
+            "embedding_space": embedding_space.to_dict(),
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "IndexManifest":
+    def from_dict(cls, data: dict[str, Any]) -> IndexManifest:
         """Deserialize from a :meth:`to_dict` dict.
 
         Raises:
@@ -162,6 +189,11 @@ class IndexManifest:
             created_at=data["created_at"],
             source_dataset_id=data["source_dataset_id"],
             canonical_schema_version=data["canonical_schema_version"],
+            embedding_space=(
+                EmbeddingSpace.from_dict(data["embedding_space"])
+                if "embedding_space" in data
+                else None
+            ),
         )
 
 
@@ -302,6 +334,11 @@ def validate_index_files(manifest: IndexManifest, artifact_dir: Path) -> list[st
                     problems.append(
                         f"{EMBEDDINGS_FILENAME} dim ({matrix.shape[1]}) != "
                         f"manifest.embedding_dim ({manifest.embedding_dim})"
+                    )
+                if matrix.dtype != np.dtype(manifest.embedding_dtype):
+                    problems.append(
+                        f"{EMBEDDINGS_FILENAME} dtype ({matrix.dtype}) != "
+                        f"manifest.embedding_dtype ({manifest.embedding_dtype})"
                     )
         except Exception as exc:  # noqa: BLE001 - surface as a problem
             problems.append(f"{EMBEDDINGS_FILENAME} unreadable: {exc}")
