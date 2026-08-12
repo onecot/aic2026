@@ -13,6 +13,7 @@ from typing import Iterable
 
 import numpy as np
 
+from aic2026.contracts import MEDIA_INFO_KEYS  # noqa: E402
 from aic2026.canonical import (
     BoundingBox,
     ClipEmbedding,
@@ -31,7 +32,7 @@ from aic2026.entities import (
 
 
 def keyframe_key_from_parts(video_id: str, keyframe_ordinal: int) -> KeyframeKey:
-    """Build a canonical :class:`KeyframeKey` from a raw video id and ordinal.
+    """Build a canonical ``KeyframeKey`` from a raw video id and ordinal.
 
     Expected input:
         - video_id: the ``L*_V*`` video id string.
@@ -180,9 +181,34 @@ def media_dict_to_metadata(video_id: str, payload: dict) -> VideoMetadata:
         - Canonical :class:`VideoMetadata`.
 
     Raises:
-        - KeyError: if a required media-info key is missing.
-        - ValueError: if any value violates the canonical contract.
+        - ValueError: if a required key is missing or any value violates
+          the canonical contract.
     """
+    missing = [key for key in MEDIA_INFO_KEYS if key not in payload]
+    if missing:
+        raise ValueError(f"media-info payload missing keys: {missing}")
+    for key in MEDIA_INFO_KEYS:
+        val = payload[key]
+        if key in (
+            "author",
+            "channel_id",
+            "channel_url",
+            "description",
+            "publish_date",
+            "thumbnail_url",
+            "title",
+            "watch_url",
+        ):
+            if not (isinstance(val, str) and val != ""):
+                raise ValueError(f"field {key!r} must be a non-empty string")
+        elif key == "keywords":
+            if not (isinstance(val, (list, tuple)) and all(isinstance(k, str) for k in val)):
+                raise ValueError(f"field keywords must be a tuple/list of strings")
+        elif key == "length":
+            if not isinstance(val, int):
+                raise ValueError(f"field length must be an int")
+        else:
+            raise ValueError(f"unexpected media-info key {key!r}")
     return VideoMetadata(
         video_id=VideoId(video_id),
         author=payload["author"],

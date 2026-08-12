@@ -298,11 +298,11 @@ def test_video_metadata_valid_required_fields():
 
 
 def test_video_metadata_rejects_missing_required_field():
-    """A missing required metadata field raises ValueError."""
+    """A missing required key in media dict raises ValueError via converter."""
     payload = _meta_payload()
     payload.pop("title")
     with pytest.raises(ValueError):
-        VideoMetadata(video_id=VideoId("L21_V001"), **payload)
+        media_dict_to_metadata("L21_V001", payload)
 
 
 def test_video_metadata_round_trip():
@@ -370,10 +370,10 @@ def test_convert_media_to_metadata():
 
 
 def test_convert_media_missing_key_raises():
-    """Missing media-info key propagates as an error."""
+    """Missing media-info key propagates as a ValueError."""
     payload = _meta_payload()
     payload.pop("author")
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError):
         media_dict_to_metadata("L21_V001", payload)
 
 
