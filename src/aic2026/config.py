@@ -26,9 +26,12 @@ class Config:
     Fields:
         - data_raw_dir: path to the raw dataset root (resolved to an
           absolute path when possible).
+        - data_indexes_dir: root directory for derived artifacts such as
+          indexes (resolved to an absolute path when possible).
     """
 
     data_raw_dir: Path
+    data_indexes_dir: Path
 
 
 def project_root() -> Path:
@@ -74,13 +77,29 @@ def load_config(path: Path | None = None) -> Config:
     Raises:
         - FileNotFoundError: if the configuration file does not exist.
         - yaml.YAMLError: if the YAML cannot be parsed.
-        - KeyError: if ``data.raw_dir`` is not present.
+        - KeyError: if a required ``data.*`` key is not present.
     """
     config_path = path or default_config_path()
     with config_path.open(encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
-    raw_dir = payload["data"]["raw_dir"]
-    resolved = Path(raw_dir)
+    return Config(
+        data_raw_dir=_resolve(config_path, payload["data"]["raw_dir"]),
+        data_indexes_dir=_resolve(config_path, payload["data"]["indexes_dir"]),
+    )
+
+
+def _resolve(config_path: Path, value: str) -> Path:
+    """Resolve a possibly-relative path against the repo root.
+
+    Expected input:
+        - config_path: path to the config file (used to locate the root).
+        - value: the raw path value from the YAML.
+
+    Returns:
+        - Absolute path if ``value`` is absolute, otherwise resolved
+          relative to the repository root.
+    """
+    resolved = Path(value)
     if not resolved.is_absolute():
         resolved = config_path.parent.parent / resolved
-    return Config(data_raw_dir=resolved)
+    return resolved

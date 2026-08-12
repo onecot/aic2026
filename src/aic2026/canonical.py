@@ -57,7 +57,7 @@ class VideoId:
 
     Fields:
         - value: the video id string, e.g. ``L21_V001``, matching
-          ``^L\d+_V\d+$``.
+          ``^L\\d+_V\\d+$``.
     """
 
     value: str

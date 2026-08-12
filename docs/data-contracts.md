@@ -168,3 +168,111 @@ Records are never silently skipped. A malformed `video_id` raises
 
 Downstream code must not depend on collection names, file patterns,
 zero-padding, or CSV/JSON/npy internals from the raw layout.
+
+## Index artifact contract (`aic2026.index_artifact`)
+
+This section defines the on-disk contract for the artifact produced by the
+indexing stage. It is the interface between the indexing stage and the
+retrieval/evaluation stages, and is intentionally independent of any ANN
+algorithm and of the raw BTC directory layout.
+
+### Purpose and flow
+
+```text
+Dataset (canonical)  --index builder (future)-->  index artifact files
+    ----------------------------------------------------------->
+                 retrieval / evaluation read ONLY the artifact
+```
+
+Retrieval and evaluation must consume the index artifact, not the raw
+dataset, so:
+
+- `video_id` and `keyframe_ordinal` (keyframe identity) come from the
+  artifact's frame records;
+- the original frame identity (`frame_index`, `pts_time`, `fps`) comes
+  from the same frame records;
+- embedding vectors come from the artifact's matrix;
+- score computation uses the artifact's stored norms.
+
+### Storage location
+
+Artifacts live under the configured indexes root, one subdirectory per
+artifact:
+
+```text
+<data.indexes_dir>/<artifact_id>/
+    manifest.json        # versioned, self-describing metadata
+    frames.ndjson        # one canonical KeyframeTiming per line (row p)
+    embeddings.npy       # dense (N, D) float16 matrix; row p <-> frames[p]
+    norms.npy            # (N,) float32 L2 norms;      row p <-> frames[p]
+    index.bin            # RESERVED slot for ANN payload (not produced yet)
+```
+
+`data.indexes_dir` defaults to `data/interim/indexes` (set in
+`configs/default.yaml`). The artifact files themselves are git-ignored
+under `data/`.
+
+### File layout and row-order contract
+
+Every row index `p` in `[0, N)` refers to the same indexed keyframe
+across all three row files. This single position is the stable lookup
+key for retrieval:
+
+- `frames.ndjson[p]` → canonical `KeyframeTiming`; provides
+  `keyframe.video_id` + `keyframe.keyframe_ordinal` (identity) and
+  `frame_index` + `pts_time` + `fps` (original frame mapping), so a
+  retrieval result can be traced back to the original frame.
+- `embeddings.npy[p]` → the embedding vector row for that keyframe.
+- `norms.npy[p]` → the L2 norm of that row, enabling cosine score
+  computation without reading the raw dataset.
+
+### Manifest (minimal metadata)
+
+`IndexManifest` is a frozen dataclass with `to_dict`/`from_dict` (JSON-
+safe) that records:
+
+- `schema_version` — must equal `INDEX_SCHEMA_VERSION = "1.0"`.
+- `artifact_id` — unique run identity for the artifact.
+- `score_metric` — supported similarity metric (currently `cosine`).
+- `embedding_dim` (`D`) and `embedding_dtype` — shape/type of each vector.
+- `num_rows` (`N`) and `num_videos` — sizes of the indexed set.
+- `created_at` — ISO-8601 timestamp (run identity).
+- `source_dataset_id` — identifier of the source dataset (e.g.
+  `aic2026_batch1`), storage-layout independent.
+- `canonical_schema_version` — canonical schema the `frames.ndjson`
+  records conform to.
+
+### Serialization helpers
+
+- `write_manifest(path, manifest)` / `read_manifest(path)` — JSON.
+- `write_frames(path, frames)` / `iter_frames(path)` — NDJSON of
+  `KeyframeTiming` records in row order.
+- `validate_index_files(manifest, artifact_dir)` — checks that the four
+  required files exist and that their shapes/counts agree with the
+  manifest (rows, dimensions, norms length).
+
+### Errors
+
+- `ValueError` — unsupported schema version, unsupported score metric, or
+  otherwise invalid manifest fields.
+- `json.JSONDecodeError` / `FileNotFoundError` — corrupt/missing files are
+  surfaced, never silently skipped.
+
+### Versioning policy
+
+`INDEX_SCHEMA_VERSION` uses the same convention as the canonical schema:
+bump the minor number for additive/backward-compatible changes and the
+major number for breaking changes. `read_manifest` and
+`IndexManifest.from_dict` reject schemas other than the current one.
+
+### What retrieval/evaluation may depend on
+
+- `IndexManifest` and the file-layout constants from `aic2026.index_artifact`.
+- The four artifact files described above.
+- Canonical `KeyframeTiming` records (via canonical schema).
+
+Retrieval/evaluation must not depend on the raw BTC collection names,
+filenames, zero-padding, or npy layout. Currently the artifact's
+`embeddings.npy` is the lookup source; `index.bin` is reserved so a future
+ANN payload can replace or supplement it without changing the row-order or
+identity contract.

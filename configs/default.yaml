@@ -15,3 +15,6 @@ project:
 data:
   # Path to the raw BTC-provided dataset root, relative to the repo root.
   raw_dir: data/raw/aic2026_batch1
+  # Root directory for derived artifacts (e.g. indexes), relative to the
+  # repo root. Each index artifact lives in its own subdirectory.
+  indexes_dir: data/interim/indexes
