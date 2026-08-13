@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from aic2026.canonical import KeyframeKey, KeyframeTiming, VideoId
-from aic2026.embeddings import Embedding, EmbeddingEncoder, EmbeddingSpace
+from aic2026.embeddings import Embedding, EmbeddingEncoder, EmbeddingSpace, legacy_embedding_space
 from aic2026.evaluation import EvaluationTask, load_eval_set
 from aic2026.index_artifact import IndexManifest, write_frames, write_manifest
 from aic2026.kis_prediction_runner import (
@@ -118,8 +118,10 @@ def _write_index_artifact(path: Path, space: EmbeddingSpace, vectors: np.ndarray
             for idx in range(vectors.shape[0])
         ],
     )
-    np.save(path / "embeddings.npy", vectors.astype(np.float32))
-    np.save(path / "norms.npy", np.linalg.norm(vectors.astype(np.float32), axis=1).astype(np.float32))
+    embedding_dtype = np.dtype(space.output_dtype)
+    matrix = vectors.astype(embedding_dtype)
+    np.save(path / "embeddings.npy", matrix)
+    np.save(path / "norms.npy", np.linalg.norm(matrix.astype(np.float32), axis=1).astype(np.float32))
     return path
 
 
@@ -269,6 +271,74 @@ def test_embedding_space_mismatch_fails_clearly(tmp_path: Path) -> None:
             ),
             _FakeEncoder(model_space),
         )
+
+
+def test_embedding_space_mismatch_allowed_only_with_explicit_override(tmp_path: Path) -> None:
+    eval_path = _write_eval_csv(
+        tmp_path / "eval_set.csv",
+        [_eval_row("kis_001", "q1", "q1-en")],
+    )
+    legacy_space = legacy_embedding_space(embedding_dim=3, output_dtype="float16")
+    model_space = _space("openclip-space")
+    index_path = _write_index_artifact(
+        tmp_path / "legacy-index",
+        legacy_space,
+        vectors=np.array([[1.0, 0.0, 0.0]], dtype=np.float16),
+        frame_indices=[10],
+    )
+
+    with pytest.raises(ValueError, match="incompatible embedding spaces"):
+        run_kis_prediction(
+            KisPredictionRunnerConfig(
+                evaluation_set_path=eval_path,
+                index_artifact_dir=index_path,
+                prediction_output_path=tmp_path / "predictions-rejected.json",
+            ),
+            _FakeEncoder(model_space),
+        )
+
+    artifact = run_kis_prediction(
+        KisPredictionRunnerConfig(
+            evaluation_set_path=eval_path,
+            index_artifact_dir=index_path,
+            prediction_output_path=tmp_path / "predictions-allowed.json",
+            allow_embedding_space_mismatch=True,
+            top_k=1,
+        ),
+        _FakeEncoder(model_space),
+    )
+
+    assert artifact.processed_query_count == 1
+    assert artifact.embedding_space_compatible is False
+    assert artifact.embedding_space_override_used is True
+    assert artifact.index_manifest["embedding_space"]["backend"] == "legacy"
+    assert artifact.model_embedding_space["backend"] == "test-backend"
+
+
+def test_artifact_records_no_override_when_spaces_match(tmp_path: Path) -> None:
+    eval_path = _write_eval_csv(
+        tmp_path / "eval_set.csv",
+        [_eval_row("kis_001", "q1", "q1-en")],
+    )
+    space = _space()
+    index_path = _write_index_artifact(
+        tmp_path / "index",
+        space,
+        vectors=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
+        frame_indices=[10],
+    )
+
+    artifact = run_kis_prediction(
+        KisPredictionRunnerConfig(
+            evaluation_set_path=eval_path,
+            index_artifact_dir=index_path,
+            prediction_output_path=tmp_path / "predictions.json",
+        ),
+        _FakeEncoder(space),
+    )
+
+    assert artifact.embedding_space_compatible is True
+    assert artifact.embedding_space_override_used is False
 
 
 def test_complete_101_query_coverage_on_team_eval_set(tmp_path: Path) -> None:

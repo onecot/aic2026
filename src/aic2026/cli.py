@@ -121,6 +121,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional stable run id recorded in the output artifact.",
     )
     predict_kis_parser.add_argument(
+        "--allow-embedding-space-mismatch",
+        action="store_true",
+        help=(
+            "Explicitly allow query/index embedding-space mismatch for diagnostic experiments. "
+            "Disabled by default."
+        ),
+    )
+    predict_kis_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -256,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                     top_k=args.top_k,
                     query_text_field=args.query_text_field,
                     query_subset_ids=tuple(args.query_ids) if args.query_ids else None,
+                    allow_embedding_space_mismatch=args.allow_embedding_space_mismatch,
                     run_id=args.run_id,
                 ),
                 encoder,

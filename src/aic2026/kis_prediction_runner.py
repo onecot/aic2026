@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
+
 from aic2026.embeddings import EmbeddingEncoder, EmbeddingSpace, validate_query_compatibility
 from aic2026.evaluation import EvaluationQuery, EvaluationTask, load_eval_set
 from aic2026.index_artifact import IndexManifest
@@ -39,6 +41,8 @@ class KisPredictionRunnerConfig:
         - top_k: positive candidate count per query.
         - query_text_field: ``query_text_vi`` (default) or ``query_text_en``.
         - query_subset_ids: optional explicit subset of query ids.
+                - allow_embedding_space_mismatch: explicit opt-in override for
+                    diagnostic experiments only. Disabled by default.
         - run_id: optional stable run id; auto-generated when omitted.
 
     Returns:
@@ -55,6 +59,7 @@ class KisPredictionRunnerConfig:
     top_k: int = 100
     query_text_field: QueryTextField = "query_text_vi"
     query_subset_ids: tuple[str, ...] | None = None
+    allow_embedding_space_mismatch: bool = False
     run_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -62,6 +67,8 @@ class KisPredictionRunnerConfig:
             raise ValueError("top_k must be a positive integer")
         if self.query_text_field not in ("query_text_vi", "query_text_en"):
             raise ValueError("query_text_field must be 'query_text_vi' or 'query_text_en'")
+        if not isinstance(self.allow_embedding_space_mismatch, bool):
+            raise ValueError("allow_embedding_space_mismatch must be a boolean")
         if self.query_subset_ids is not None:
             if len(self.query_subset_ids) == 0:
                 raise ValueError("query_subset_ids must be None or a non-empty tuple")
@@ -156,6 +163,8 @@ class KisPredictionArtifact:
     processed_query_count: int
     query_text_field: QueryTextField
     top_k: int
+    embedding_space_compatible: bool
+    embedding_space_override_used: bool
     index_artifact_path: str
     index_manifest: dict[str, Any]
     model_embedding_space: dict[str, Any]
@@ -181,6 +190,12 @@ class KisPredictionArtifact:
             raise ValueError("processed_query_count must equal len(query_results)")
         if not isinstance(self.top_k, int) or self.top_k < 1:
             raise ValueError("top_k must be a positive integer")
+        if not isinstance(self.embedding_space_compatible, bool):
+            raise ValueError("embedding_space_compatible must be a boolean")
+        if not isinstance(self.embedding_space_override_used, bool):
+            raise ValueError("embedding_space_override_used must be a boolean")
+        if self.embedding_space_override_used and self.embedding_space_compatible:
+            raise ValueError("embedding_space_override_used cannot be true when spaces are compatible")
         if self.query_text_field not in ("query_text_vi", "query_text_en"):
             raise ValueError("query_text_field must be 'query_text_vi' or 'query_text_en'")
 
@@ -195,6 +210,8 @@ class KisPredictionArtifact:
             "processed_query_count": self.processed_query_count,
             "query_text_field": self.query_text_field,
             "top_k": self.top_k,
+            "embedding_space_compatible": self.embedding_space_compatible,
+            "embedding_space_override_used": self.embedding_space_override_used,
             "index_artifact_path": self.index_artifact_path,
             "index_manifest": self.index_manifest,
             "model_embedding_space": self.model_embedding_space,
@@ -216,6 +233,8 @@ class KisPredictionArtifact:
             processed_query_count=int(data["processed_query_count"]),
             query_text_field=data["query_text_field"],
             top_k=int(data["top_k"]),
+            embedding_space_compatible=bool(data["embedding_space_compatible"]),
+            embedding_space_override_used=bool(data["embedding_space_override_used"]),
             index_artifact_path=str(data["index_artifact_path"]),
             index_manifest=dict(data["index_manifest"]),
             model_embedding_space=dict(data["model_embedding_space"]),
@@ -262,14 +281,23 @@ def run_kis_prediction(
 
     queries = _select_queries(all_kis_queries, config.query_subset_ids)
     retriever = IndexRetriever(config.index_artifact_dir)
-    _require_compatible_spaces(encoder.embedding_space, retriever.manifest)
+    spaces_compatible = encoder.embedding_space == retriever.manifest.embedding_space
+    override_used = False
+    if not spaces_compatible:
+        if not config.allow_embedding_space_mismatch:
+            _require_compatible_spaces(encoder.embedding_space, retriever.manifest)
+        override_used = True
 
     results: list[QueryPredictionResult] = []
     for query in queries:
         query_text = _resolve_query_text(query.query_text_vi, query.query_text_en, config.query_text_field)
         query_embedding = encoder.encode_text(query_text)
-        validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
-        retrieval = retriever.search(query_embedding, top_k=config.top_k)
+        retrieval = _search_candidates(
+            retriever=retriever,
+            query_embedding=query_embedding,
+            top_k=config.top_k,
+            allow_mismatch=config.allow_embedding_space_mismatch,
+        )
         results.append(
             QueryPredictionResult(
                 query_id=query.query_id,
@@ -287,6 +315,8 @@ def run_kis_prediction(
         processed_query_count=len(results),
         query_text_field=config.query_text_field,
         top_k=config.top_k,
+        embedding_space_compatible=spaces_compatible,
+        embedding_space_override_used=override_used,
         index_artifact_path=str(Path(config.index_artifact_dir).resolve()),
         index_manifest=retriever.manifest.to_dict(),
         model_embedding_space=encoder.embedding_space.to_dict(),
@@ -383,6 +413,47 @@ def _to_ranked_prediction(candidate: RetrievalCandidate) -> RankedKisPrediction:
         frame_index=candidate.frame_index,
         score=candidate.score,
     )
+
+
+def _search_candidates(
+    retriever: IndexRetriever,
+    query_embedding: Any,
+    top_k: int,
+    allow_mismatch: bool,
+) -> list[RetrievalCandidate]:
+    """Run retrieval under strict mode or explicit mismatch override.
+
+    Expected input:
+        - retriever: loaded index retriever.
+        - query_embedding: text embedding generated by the encoder.
+        - top_k: retrieval cutoff.
+        - allow_mismatch: explicit override gate.
+
+    Returns:
+        - Ranked retrieval candidates.
+
+    Raises:
+        - ValueError: for incompatible spaces under strict mode, or when
+          override is requested for a non-legacy index that cannot accept
+          raw vectors by contract.
+    """
+    if not allow_mismatch:
+        validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
+        return retriever.search(query_embedding, top_k=top_k)
+
+    if query_embedding.space == retriever.manifest.embedding_space:
+        return retriever.search(query_embedding, top_k=top_k)
+
+    index_space = retriever.manifest.embedding_space
+    if index_space is None:
+        raise ValueError("index artifact is missing embedding-space metadata")
+    if index_space.backend != "legacy":
+        raise ValueError(
+            "embedding-space mismatch override is only supported for legacy indexes; "
+            f"index backend is {index_space.backend!r}"
+        )
+    query_vector = np.asarray(query_embedding.vector)
+    return retriever.search(query_vector, top_k=top_k)
 
 
 def _default_run_id() -> str:

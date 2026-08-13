@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from aic2026.kis_scoring import (
     is_kis_correct,
     score_kis_query,
 )
+from aic2026.kis_prediction_runner import load_kis_predictions_for_scoring
 
 
 def _query(query_id: str = "kis_001", start: int = 100, end: int = 200) -> EvaluationQuery:
@@ -131,3 +133,62 @@ def test_real_kis_eval_set_accepts_complete_empty_prediction_mapping_when_availa
     assert len(result.query_scores) == 101
     assert [result.score_at(cutoff) for cutoff in KIS_TOP_K] == [0.0] * len(KIS_TOP_K)
     assert result.final_score == 0.0
+
+
+def test_evaluate_kis_accepts_evaluationset_from_loader_with_prediction_artifact(tmp_path: Path) -> None:
+    csv_path = tmp_path / "eval_set.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "query_id,task,query_text_vi,query_text_en,gt_video_id,gt_frame_start,gt_frame_end,gt_answer,gt_events,annotator,note",
+                "kis_001,kis,T\u00ecm c\u1ea3nh,mock query,L21_V001,10,20,,,P1,",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    artifact_path = tmp_path / "predictions.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "run_id": "test-run",
+                "created_at": "2026-08-13T00:00:00Z",
+                "evaluation_set_path": str(csv_path),
+                "evaluation_set_query_count": 1,
+                "processed_query_count": 1,
+                "query_text_field": "query_text_vi",
+                "top_k": 1,
+                "embedding_space_compatible": True,
+                "embedding_space_override_used": False,
+                "index_artifact_path": "/tmp/index",
+                "index_manifest": {"artifact_id": "dummy-index", "embedding_space": {"backend": "legacy"}},
+                "model_embedding_space": {"backend": "legacy"},
+                "model_config": None,
+                "selected_query_ids": None,
+                "query_results": [
+                    {
+                        "query_id": "kis_001",
+                        "query_text": "T\u00ecm c\u1ea3nh",
+                        "predictions": [
+                            {"rank": 1, "video_id": "L21_V001", "frame_index": 15, "score": 0.5},
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    eval_set = load_eval_set(csv_path)
+    predictions = load_kis_predictions_for_scoring(artifact_path)
+    result = evaluate_kis(eval_set, predictions)
+
+    assert result.score_at(1) == 1.0
+    assert result.score_at(5) == 1.0
+    assert result.score_at(20) == 1.0
+    assert result.score_at(50) == 1.0
+    assert result.score_at(100) == 1.0
+    assert result.final_score == 1.0

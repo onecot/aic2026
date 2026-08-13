@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from math import fsum
 
 from aic2026.canonical import VideoId
-from aic2026.evaluation import EvaluationQuery, EvaluationTask
+from aic2026.evaluation import EvaluationQuery, EvaluationSet, EvaluationTask
 
 KIS_TOP_K = (1, 5, 20, 50, 100)
 
@@ -237,14 +237,15 @@ def calculate_final_score(top_k_scores: Sequence[TopKScore]) -> float:
 
 
 def evaluate_kis(
-    queries: Iterable[EvaluationQuery],
+    queries: Iterable[EvaluationQuery] | EvaluationSet,
     predictions_by_query: Mapping[str, Sequence[KisPrediction]],
     cutoffs: Sequence[int] = KIS_TOP_K,
 ) -> KisEvaluationResult:
     """Evaluate a complete KIS prediction set against canonical KIS queries.
 
     Expected input:
-        - queries: non-empty canonical KIS queries with unique ids.
+                - queries: non-empty canonical KIS queries with unique ids, either as
+                    an iterable of :class:`EvaluationQuery` or an :class:`EvaluationSet`.
         - predictions_by_query: one ranked prediction sequence per query id;
           an empty sequence is valid when a system returned no candidates.
         - cutoffs: positive R@k cutoffs; defaults to BTC's 1, 5, 20, 50, 100.
@@ -256,7 +257,7 @@ def evaluate_kis(
         - ValueError: if queries are not KIS, query ids are duplicated, or the
           prediction mapping is missing/contains unexpected query ids.
     """
-    query_values = tuple(queries)
+    query_values = queries.queries if isinstance(queries, EvaluationSet) else tuple(queries)
     if not query_values:
         raise ValueError("KIS evaluation requires at least one query")
     query_ids = [query.query_id for query in query_values]
