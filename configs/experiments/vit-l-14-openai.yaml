@@ -1,0 +1,26 @@
+# Experiment: OpenCLIP ViT-L-14 with the OpenAI-pretrained checkpoint.
+#
+# ViT-L-14 produces 768-dimensional embeddings (vs. 512 for ViT-B-32), so an
+# index/embedding artifact built from this config is in a different embedding
+# space and must not be mixed with ViT-B-32 artifacts.
+#
+# The full embedding space (including this model and checkpoint) is recorded
+# in every embedding/index/prediction artifact, so artifacts built with
+# different experiment configs are never silently mixed.
+
+data:
+  raw_dir: data/raw/aic2026_batch1
+  indexes_dir: data/interim/indexes
+
+models:
+  openclip:
+    backend: openclip
+    model_name: ViT-L-14
+    pretrained: openai
+    device: auto
+    precision: fp32
+    normalization: l2
+    # Project-managed processing/tokenizer revision labels; bump them when
+    # changing the convention for an otherwise identical model/checkpoint.
+    preprocessing_id: openclip-default-v1
+    tokenizer_id: openclip-default-v1

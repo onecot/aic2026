@@ -152,6 +152,31 @@ Supported model/checkpoint combinations are whatever OpenCLIP provides
 (`model_name` + `pretrained`, e.g. `ViT-B-32` / `openai` or
 `laion2b_s34b_b79k`). Weights are downloaded by OpenCLIP on first use.
 
+### Experiment configurations
+
+Model/checkpoint selection is file-driven so experiments are reproducible
+without editing `configs/default.yaml`. Shipped example configs live in
+`configs/experiments/` (each is a complete standalone config):
+
+| Config file                          | `model_name` | `pretrained`        |
+|--------------------------------------|--------------|---------------------|
+| `configs/experiments/vit-b-32-openai.yaml`   | `ViT-B-32`   | `openai`            |
+| `configs/experiments/vit-l-14-openai.yaml`   | `ViT-L-14`   | `openai`            |
+| `configs/experiments/vit-l-14-laion2b.yaml`  | `ViT-L-14`   | `laion2b_s32b_b82k` |
+
+Load an experiment config anywhere a config is expected (Python API):
+
+```python
+config = load_config("configs/experiments/vit-l-14-openai.yaml")
+encoder = OpenClipEncoder(config.openclip)
+```
+
+Each experiment records its full embedding space in the artifacts it
+produces, so artifacts built from different configs are never silently mixed
+(embedding dim, model, and checkpoint are all part of `space_id`). Note that
+`ViT-L-14` produces 768-dimensional embeddings vs. 512 for `ViT-B-32`; an
+index built from one cannot be queried with the other.
+
 ### EmbeddingSpace
 
 `EmbeddingSpace` is the exact identity of a vector space: backend, model_id,
@@ -254,19 +279,26 @@ from aic2026.dataset import Dataset
 from aic2026.model_backends.openclip import OpenClipEncoder
 from aic2026.embedding_runner import build_embeddings
 
-config = load_config()
+config = load_config("configs/experiments/vit-b-32-openai.yaml")  # experiment config
 dataset = Dataset(config.data_raw_dir)
-encoder = OpenClipEncoder(config.openclip)     # ViT-B-32 / laion2b_s34b_b79k
+encoder = OpenClipEncoder(config.openclip)     # ViT-B-32 / openai
 
 manifest = build_embeddings(
     dataset, encoder,
     artifact_dir=Path("data/interim/embeddings"),
-    artifact_id="openclip-mini-l30v041-l21v001",
+    artifact_id="openclip-openai-mini-l30v041-l21v001",
     batch_size=8,
     video_ids=["L30_V041", "L21_V001"],        # 24 + 307 = 331 rows
 )
 print(manifest.num_rows, manifest.num_videos, manifest.embedding_space.space_id)
 ```
+
+There is no embedding CLI, so "running an experiment" means loading its config
+with `load_config("<configs/experiments/....yaml>")` and passing the resulting
+`encoder` (and `config.openclip` model metadata) through the Python API, for
+both `build_embeddings` here and `run_kis_prediction` (Section 7). Pick
+`artifact_id` values that encode the model/checkpoint so artifacts stay
+distinguishable across experiments.
 
 ### Full dataset example
 
@@ -365,7 +397,7 @@ dimensions, zero-norm queries, or a non-positive `top_k` raise `ValueError`.
 
 ```bash
 aic2026 predict-kis \
-  --config configs/default.yaml \
+  --config configs/experiments/vit-b-32-openai.yaml \
   --evaluation-set data/eval/eval_set.csv \
   --index-artifact data/interim/indexes/btc-batch1-full \
   --output data/interim/predictions/kis.json \
@@ -373,6 +405,14 @@ aic2026 predict-kis \
   --query-text-field query_text_vi \
   --run-id my-run
 ```
+
+The `--config` file selects the OpenCLIP model/checkpoint used to encode the
+query text. Use `configs/experiments/vit-l-14-openai.yaml` or
+`configs/experiments/vit-l-14-laion2b.yaml` to run another model; the index
+must be in that model's embedding space (build it from a matching embedding
+artifact, Section 4/5), or the run fails unless
+`--allow-embedding-space-mismatch` is explicitly passed for the `legacy/unknown`
+BTC baseline index.
 
 Flags:
 
@@ -471,29 +511,13 @@ experiment only**, not the current best configuration.
 
 Verified against `data/interim/predictions/kis-openai-en-vs-btc-batch1-full.json`.
 
-Reproduce it with an experiment config that selects the `openai` checkpoint
-(`configs/default.yaml` defaults to `laion2b_s34b_b79k`):
-
-```yaml
-# configs/experiments/openai.yaml
-data:
-  raw_dir: data/raw/aic2026_batch1
-  indexes_dir: data/interim/indexes
-models:
-  openclip:
-    backend: openclip
-    model_name: ViT-B-32
-    pretrained: openai
-    device: auto
-    precision: fp32
-    normalization: l2
-    preprocessing_id: openclip-default-v1
-    tokenizer_id: openclip-default-v1
-```
+Reproduce it with the shipped experiment config that selects the `openai`
+checkpoint (`configs/default.yaml` defaults to `laion2b_s34b_b79k`):
+`configs/experiments/vit-b-32-openai.yaml` (ViT-B-32 / openai).
 
 ```bash
 aic2026 predict-kis \
-  --config configs/experiments/openai.yaml \
+  --config configs/experiments/vit-b-32-openai.yaml \
   --evaluation-set data/eval/eval_set.csv \
   --index-artifact data/interim/indexes/btc-batch1-full \
   --output data/interim/predictions/kis-openai-en-vs-btc-batch1-full.json \

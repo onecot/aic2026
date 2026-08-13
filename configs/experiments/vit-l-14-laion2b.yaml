@@ -1,0 +1,25 @@
+# Experiment: OpenCLIP ViT-L-14 with the LAION-2B-pretrained checkpoint.
+#
+# ``laion2b_s32b_b82k`` is OpenCLIP's LAION-2B pretrained identifier for
+# ViT-L-14. Weights are downloaded by OpenCLIP on first use.
+#
+# The full embedding space (including this model and checkpoint) is recorded
+# in every embedding/index/prediction artifact, so artifacts built with
+# different experiment configs are never silently mixed.
+
+data:
+  raw_dir: data/raw/aic2026_batch1
+  indexes_dir: data/interim/indexes
+
+models:
+  openclip:
+    backend: openclip
+    model_name: ViT-L-14
+    pretrained: laion2b_s32b_b82k
+    device: auto
+    precision: fp32
+    normalization: l2
+    # Project-managed processing/tokenizer revision labels; bump them when
+    # changing the convention for an otherwise identical model/checkpoint.
+    preprocessing_id: openclip-default-v1
+    tokenizer_id: openclip-default-v1

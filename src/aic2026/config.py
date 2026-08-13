@@ -110,7 +110,7 @@ def default_config_path() -> Path:
     return project_root() / "configs" / "default.yaml"
 
 
-def load_config(path: Path | None = None) -> Config:
+def load_config(path: Path | str | None = None) -> Config:
     """Load the default base configuration.
 
     Expected input:
@@ -125,13 +125,13 @@ def load_config(path: Path | None = None) -> Config:
         - yaml.YAMLError: if the YAML cannot be parsed.
         - KeyError: if a required ``data.*`` key is not present.
     """
-    config_path = path or default_config_path()
+    config_path = Path(path) if path is not None else default_config_path()
     with config_path.open(encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
     openclip_payload = payload["models"]["openclip"]
     return Config(
-        data_raw_dir=_resolve(config_path, payload["data"]["raw_dir"]),
-        data_indexes_dir=_resolve(config_path, payload["data"]["indexes_dir"]),
+        data_raw_dir=_resolve(payload["data"]["raw_dir"]),
+        data_indexes_dir=_resolve(payload["data"]["indexes_dir"]),
         openclip=OpenClipConfig(
             backend=openclip_payload["backend"],
             model_name=openclip_payload["model_name"],
@@ -145,18 +145,19 @@ def load_config(path: Path | None = None) -> Config:
     )
 
 
-def _resolve(config_path: Path, value: str) -> Path:
+def _resolve(value: str) -> Path:
     """Resolve a possibly-relative path against the repo root.
 
     Expected input:
-        - config_path: path to the config file (used to locate the root).
         - value: the raw path value from the YAML.
 
     Returns:
         - Absolute path if ``value`` is absolute, otherwise resolved
-          relative to the repository root.
+          relative to the repository root (independent of where the config
+          file lives, so experiment configs in ``configs/experiments/``
+          resolve exactly like the base config in ``configs/``).
     """
     resolved = Path(value)
     if not resolved.is_absolute():
-        resolved = config_path.parent.parent / resolved
+        resolved = project_root() / resolved
     return resolved
