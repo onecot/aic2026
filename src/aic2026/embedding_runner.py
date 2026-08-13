@@ -27,6 +27,7 @@ Behavior:
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,6 +54,9 @@ ImageLoader = Callable[[Path], object]
 _CHECKPOINT_FILENAME = ".checkpoint.json"
 _BUILD_META_FILENAME = ".build_meta.json"
 _MANIFEST_FILENAME = "manifest.json"
+
+#: Module logger for build progress and diagnostics.
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingBuildError(RuntimeError):
@@ -135,6 +139,155 @@ def default_image_loader() -> ImageLoader:
             return img.convert("RGB")
 
     return load
+
+
+def _percent(completed: int, total: int) -> float:
+    """Return the completion percentage, guarding against an empty build.
+
+    Returns:
+        - 100.0 when ``total`` is zero, otherwise the completion ratio.
+    """
+    if total <= 0:
+        return 100.0
+    return 100.0 * completed / total
+
+
+class _LoggingProgress:
+    """Fallback progress reporter that logs at batch boundaries.
+
+    Used when tqdm is unavailable. Reports build totals, the resume point,
+    and one line per completed batch so long builds stay observable without
+    emitting a line per row.
+    """
+
+    def __init__(
+        self,
+        progress_logger: logging.Logger,
+        total_rows: int,
+        total_videos: int,
+        start_row: int,
+    ) -> None:
+        self._logger = progress_logger
+        self._total = total_rows
+        self._videos = total_videos
+        self._completed = start_row
+
+    def on_build_start(self) -> None:
+        """Log the build totals and the resume point."""
+        self._logger.info(
+            "embedding build: %d rows across %d videos (resume_from=%d)",
+            self._total,
+            self._videos,
+            self._completed,
+        )
+
+    def on_rows_written(
+        self,
+        completed: int,
+        video_id: str,
+        batch_done: int,
+        batch_total: int,
+    ) -> None:
+        """Record one written row; log at each completed batch boundary."""
+        self._completed = completed
+        if batch_done == batch_total:
+            self._logger.info(
+                "embedding progress: %d/%d rows (%.1f%%) video=%s",
+                completed,
+                self._total,
+                _percent(completed, self._total),
+                video_id,
+            )
+
+    def complete(self) -> None:
+        """Log successful completion."""
+        self._logger.info("embedding build complete: %d/%d rows", self._total, self._total)
+
+    def abort(self, completed: int) -> None:
+        """Log that the build stopped early (interruption or error)."""
+        self._logger.warning(
+            "embedding build stopped at row %d of %d", completed, self._total
+        )
+
+
+class _TqdmProgress:
+    """tqdm-based progress reporter for the embedding build.
+
+    The bar shows the total row count and the number of videos in its
+    description, the completed rows through its position, and the current
+    batch progress in its postfix. In resume mode the bar starts at the
+    checkpoint row rather than zero.
+    """
+
+    def __init__(
+        self,
+        tqdm_cls: Callable[..., object],
+        progress_logger: logging.Logger,
+        total_rows: int,
+        total_videos: int,
+        start_row: int,
+    ) -> None:
+        self._logger = progress_logger
+        self._total = total_rows
+        self._bar = tqdm_cls(
+            total=total_rows,
+            initial=start_row,
+            unit="row",
+            desc=f"embedding [{total_videos} videos]",
+            dynamic_ncols=True,
+        )
+
+    def on_build_start(self) -> None:
+        """Show the initial batch/video placeholders."""
+        self._bar.set_postfix(video="-", batch="-")
+
+    def on_rows_written(
+        self,
+        completed: int,
+        video_id: str,
+        batch_done: int,
+        batch_total: int,
+    ) -> None:
+        """Advance the bar by one row and refresh the batch progress."""
+        self._bar.update(1)
+        self._bar.set_postfix(video=video_id, batch=f"{batch_done}/{batch_total}")
+
+    def complete(self) -> None:
+        """Close the bar and log successful completion."""
+        self._bar.close()
+        self._logger.info("embedding build complete: %d rows", self._total)
+
+    def abort(self, completed: int) -> None:
+        """Close the bar and log that the build stopped early."""
+        self._bar.close()
+        self._logger.warning(
+            "embedding build stopped at row %d of %d", completed, self._total
+        )
+
+
+def _create_progress(
+    progress_logger: logging.Logger,
+    total_rows: int,
+    total_videos: int,
+    start_row: int,
+) -> _LoggingProgress | _TqdmProgress:
+    """Return a tqdm reporter when available, else a logging fallback.
+
+    Expected input:
+        - progress_logger: logger used by the fallback reporter.
+        - total_rows: total number of rows to encode.
+        - total_videos: number of videos being processed.
+        - start_row: number of rows already completed (resume point).
+
+    Returns:
+        - A tqdm-based reporter when tqdm is installed, otherwise a
+          logging-based fallback.
+    """
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return _LoggingProgress(progress_logger, total_rows, total_videos, start_row)
+    return _TqdmProgress(tqdm, progress_logger, total_rows, total_videos, start_row)
 
 
 def _inspect_dataset(dataset: Dataset, video_ids: Iterable[str]) -> _BuildMeta:
@@ -408,6 +561,9 @@ def build_embeddings(
                 f"frames.ndjson lines do not match checkpoint rows ({start_row}); cannot resume"
             )
 
+    progress = _create_progress(logger, N, meta.num_videos, start_row)
+    progress.on_build_start()
+
     # ------------------------------------------------------------------ allocate row files
     if embeddings_path.is_file() and resume and start_row > 0:
         embeddings = np.load(embeddings_path, mmap_mode="r+")
@@ -432,6 +588,8 @@ def build_embeddings(
             return
         images = list(pending_images)
         timings = list(pending_timings)
+        video_id = timings[0].keyframe.video_id.value
+        batch_rows = len(timings)
         for idx, embedding in enumerate(_encode_images(encoder, images)):
             if stop_after_rows is not None and next_row >= stop_after_rows:
                 embeddings.flush()
@@ -448,6 +606,7 @@ def build_embeddings(
             frames_file.write(json.dumps(timing.to_dict()) + "\n")
             row += 1
             next_row += 1
+            progress.on_rows_written(next_row, video_id, idx + 1, batch_rows)
         embeddings.flush()
         _write_json_atomic(checkpoint_path, {"next_row": next_row})
         pending_timings = []
@@ -490,11 +649,16 @@ def build_embeddings(
         write_pending_batch()
         embeddings.flush()
         _write_json_atomic(checkpoint_path, {"next_row": next_row})
+    except Exception:
+        # close the progress reporter on any abnormal exit before re-raising
+        progress.abort(next_row)
+        raise
     finally:
         frames_file.close()
 
     if next_row != N:
         raise ValueError(f"written rows ({next_row}) != expected ({N})")
+    progress.complete()
 
     # ------------------------------------------------------------------ validate then write the final manifest
     manifest = EmbeddingManifest(

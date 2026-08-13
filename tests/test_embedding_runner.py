@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import aic2026.embedding_runner as embedding_runner
 from aic2026.canonical import VideoId
 from aic2026.dataset import Dataset
 from aic2026.embedding_artifact import (
@@ -443,3 +445,115 @@ def _tiny_png() -> bytes:
         + chunk(b"IDAT", zlib.compress(raw))
         + chunk(b"IEND", b"")
     )
+
+
+class _FakeTqdm:
+    """Records construction and updates without rendering a real bar."""
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.updates = 0
+        self.postfix: dict[str, object] | None = None
+        self.closed = False
+
+    def update(self, n: int = 1) -> None:
+        self.updates += int(n)
+
+    def set_postfix(self, **kwargs: object) -> None:
+        self.postfix = kwargs
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_progress_logging_fallback_reports_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The logging fallback reports totals and completed rows at batch ends."""
+    progress_logger = logging.getLogger("aic2026.embedding_runner.test-progress")
+    with caplog.at_level(logging.INFO, logger=progress_logger.name):
+        reporter = embedding_runner._LoggingProgress(progress_logger, 6, 3, 0)
+        reporter.on_build_start()
+        reporter.on_rows_written(2, "L21_V001", 2, 2)
+        reporter.on_rows_written(4, "L21_V002", 2, 2)
+        reporter.complete()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("6 rows across 3 videos" in message for message in messages)
+    assert any("2/6 rows" in message for message in messages)
+    assert any("4/6 rows" in message for message in messages)
+    assert any("complete" in message for message in messages)
+
+
+def test_progress_tqdm_bar_starts_at_resume_row_and_tracks_batch() -> None:
+    """The tqdm bar initializes from the resume row and reports batch progress."""
+    fake = _FakeTqdm()
+    created: dict[str, object] = {}
+
+    def factory(**kwargs: object) -> _FakeTqdm:
+        created.update(kwargs)
+        return fake
+
+    reporter = embedding_runner._TqdmProgress(
+        factory, logging.getLogger("tqdm-test"), 6, 3, 2
+    )
+    assert created["total"] == 6
+    assert created["initial"] == 2
+    reporter.on_build_start()
+    reporter.on_rows_written(3, "L21_V001", 1, 2)
+    assert fake.updates == 1
+    assert fake.postfix == {"video": "L21_V001", "batch": "1/2"}
+    reporter.complete()
+    assert fake.closed
+
+
+def test_progress_create_falls_back_to_logging_without_tqdm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When tqdm cannot be imported, the runner falls back to logging."""
+    monkeypatch.setitem(__import__("sys").modules, "tqdm", None)
+    reporter = embedding_runner._create_progress(
+        logging.getLogger("tqdm-fallback"), 6, 3, 0
+    )
+    assert isinstance(reporter, embedding_runner._LoggingProgress)
+
+
+def test_progress_resume_initializes_from_checkpoint(
+    raw_dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resumed build starts the progress reporter at the checkpoint row."""
+    artifact = tmp_path / "progress-resume"
+    dataset = Dataset(raw_dataset)
+    captured: list[tuple[int, int, int]] = []
+
+    class _SpyReporter:
+        def __init__(
+            self, logger: object, total_rows: int, total_videos: int, start_row: int
+        ) -> None:
+            captured.append((total_rows, total_videos, start_row))
+
+        def on_build_start(self) -> None:
+            pass
+
+        def on_rows_written(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def complete(self) -> None:
+            pass
+
+        def abort(self, completed: int) -> None:
+            pass
+
+    monkeypatch.setattr(embedding_runner, "_create_progress", _SpyReporter)
+
+    with pytest.raises(EmbeddingBuildError):
+        build_embeddings(
+            dataset, _RecordingSyntheticEncoder(_space()), artifact, "emb-progress-resume",
+            stop_after_rows=2, batch_size=1, image_loader=_image_loader,
+        )
+    assert captured[-1] == (6, 3, 0)
+
+    build_embeddings(
+        dataset, _RecordingSyntheticEncoder(_space()), artifact, "emb-progress-resume",
+        batch_size=1, image_loader=_image_loader,
+    )
+    assert captured[-1] == (6, 3, 2)
