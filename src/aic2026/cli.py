@@ -2,9 +2,10 @@
 
 Commands:
     inspect          - inspect the raw dataset and print a concise report.
+    predict-kis      - generate ranked KIS predictions from an index artifact.
 
 CLI logic stays thin; the real work lives in reusable modules
-(``aic2026.inspection``, ``aic2026.config``).
+(``aic2026.inspection``, ``aic2026.config``, ``aic2026.kis_prediction_runner``).
 """
 
 import argparse
@@ -14,6 +15,8 @@ from pathlib import Path
 
 from aic2026.config import load_config
 from aic2026.inspection import DatasetReport, inspect_dataset
+from aic2026.kis_prediction_runner import KisPredictionRunnerConfig, run_kis_prediction
+from aic2026.model_backends.openclip import OpenClipEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of object JSON files to schema-check per video (0 to skip).",
     )
     inspect_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    predict_kis_parser = subparsers.add_parser(
+        "predict-kis",
+        help="Run KIS prediction generation and write a JSON artifact.",
+    )
+    predict_kis_parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a YAML config file (defaults to configs/default.yaml).",
+    )
+    predict_kis_parser.add_argument(
+        "--evaluation-set",
+        type=Path,
+        default=Path("data/eval/eval_set.csv"),
+        help="Path to evaluation CSV (default: data/eval/eval_set.csv).",
+    )
+    predict_kis_parser.add_argument(
+        "--index-artifact",
+        type=Path,
+        required=True,
+        help="Path to the index artifact directory.",
+    )
+    predict_kis_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path for the output prediction artifact JSON.",
+    )
+    predict_kis_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=100,
+        help="Number of ranked retrieval candidates per query.",
+    )
+    predict_kis_parser.add_argument(
+        "--query-text-field",
+        choices=("query_text_vi", "query_text_en"),
+        default="query_text_vi",
+        help="Query text field to encode.",
+    )
+    predict_kis_parser.add_argument(
+        "--query-id",
+        dest="query_ids",
+        action="append",
+        default=None,
+        help="Optional query id filter; repeat to select an explicit subset.",
+    )
+    predict_kis_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional stable run id recorded in the output artifact.",
+    )
+    predict_kis_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -170,6 +232,40 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print_report(report)
+        return 0
+
+    if args.command == "predict-kis":
+        config = load_config(args.config)
+        try:
+            encoder = OpenClipEncoder(config.openclip)
+            artifact = run_kis_prediction(
+                KisPredictionRunnerConfig(
+                    evaluation_set_path=args.evaluation_set,
+                    index_artifact_dir=args.index_artifact,
+                    prediction_output_path=args.output,
+                    model_config={
+                        "backend": config.openclip.backend,
+                        "model_name": config.openclip.model_name,
+                        "pretrained": config.openclip.pretrained,
+                        "device": config.openclip.device,
+                        "precision": config.openclip.precision,
+                        "normalization": config.openclip.normalization,
+                        "preprocessing_id": config.openclip.preprocessing_id,
+                        "tokenizer_id": config.openclip.tokenizer_id,
+                    },
+                    top_k=args.top_k,
+                    query_text_field=args.query_text_field,
+                    query_subset_ids=tuple(args.query_ids) if args.query_ids else None,
+                    run_id=args.run_id,
+                ),
+                encoder,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Prediction artifact: {args.output}")
+        print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
+        print(f"Index artifact id: {artifact.index_manifest['artifact_id']}")
         return 0
 
     parser.error(f"unknown command: {args.command}")
