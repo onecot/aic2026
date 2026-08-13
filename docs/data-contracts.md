@@ -140,6 +140,7 @@ has_video(id)       -> bool
 metadata(id)        -> VideoMetadata
 timings(id)         -> list[KeyframeTiming]   # ordered keyframe set per video
 keyframe_ordinals(id) -> list[int]
+keyframe_image_path(id, ordinal) -> Path      # raw image path (layout hidden)
 iter_keyframes(id)  -> Iterator[KeyframeKey]
 
 # lazy streaming
@@ -297,6 +298,120 @@ filenames, zero-padding, or npy layout. Currently the artifact's
 `embeddings.npy` is the lookup source; `index.bin` is reserved so a future
 ANN payload can replace or supplement it without changing the row-order or
 identity contract.
+
+## Image embedding artifact (`aic2026.embedding_artifact`, `aic2026.embedding_runner`)
+
+The image embedding stage converts canonical dataset keyframes into
+model-specific embedding vectors produced by an injected image encoder. It
+sits between the `Dataset` loading layer and the index stage:
+
+```text
+Dataset (canonical) --embedding runner--> embedding artifact files
+     ------------------------------------------------------------>
+                       index builder reads the embedding artifact rows
+     ------------------------------------------------------------>
+                       retrieval / evaluation read only the index artifact
+```
+
+The runner is model/backend-agnostic: it accepts any object satisfying the
+`EmbeddingEncoder` protocol from `aic2026.embeddings` (`embedding_space`,
+`encode_image`, `encode_text`), and uses `encode_image_batch` when the
+encoder exposes it (falling back to per-image `encode_image`). Model or
+backend-specific logic (preprocessing, device, normalization) stays inside
+the encoder, never in the runner.
+
+### Public API
+
+```python
+from aic2026.embedding_runner import build_embeddings
+
+manifest = build_embeddings(
+    dataset,          # Dataset accessor
+    encoder,          # EmbeddingEncoder implementation
+    artifact_dir,     # output directory (created if absent)
+    artifact_id,      # unique run identity
+    batch_size=16,    # keyframes per model invocation / checkpoint flush
+    resume=True,      # continue or validate a partial/complete build
+    stop_after_rows=None,  # testing hook: no final manifest is written
+    video_ids=None,   # optional subset; videos stay in dataset order
+    image_loader=None,    # callable path -> backend-native image (default Pillow)
+) -> EmbeddingManifest
+```
+
+Keyframe images are resolved through `Dataset.keyframe_image_path(id,
+ordinal)` and loaded by an injected `image_loader`, so neither the runner
+nor the encoder depends on the raw `keyframes/` filenames or folder layout.
+Videos are always processed in the dataset's sorted `video_ids()` order and
+keyframes in the canonical `timings()` order, making every build
+deterministic.
+
+### Artifact layout and row-order contract
+
+Artifacts live under one directory per `artifact_id`:
+
+```text
+<artifact_dir>/<artifact_id>/
+    manifest.json        # versioned, self-describing metadata
+    embeddings.npy       # dense (N, D) matrix; row i <-> frames[i]
+    frames.ndjson        # one canonical KeyframeTiming per line (row i)
+```
+
+Every row index `i` in `[0, N)` refers to the same keyframe across
+`embeddings.npy[i]` and `frames.ndjson[i]`. Each frame record preserves
+`video_id`, `keyframe_ordinal`, `frame_index`, `pts_time`, and `fps`, so an
+embedding can always be mapped back to its original frame. The matrix is
+written through a memory-mapped file and is efficiently loadable with
+`np.load(path, mmap_mode='r')`.
+
+`EmbeddingManifest` is a frozen dataclass with `to_dict`/`from_dict`
+(JSON-safe). `EMBEDDING_ARTIFACT_SCHEMA_VERSION = "1.0"`. The manifest
+records at minimum:
+
+- `schema_version` — `"1.0"`.
+- `artifact_id` — unique run identity.
+- `embedding_space` — full model/backend identity from the encoder
+  (backend, model id, checkpoint, dimension, output dtype, normalization,
+  preprocessing), which is what makes the artifact comparable with index
+  artifacts from the same model.
+- `embedding_dim` (`D`) and `embedding_dtype` — shape/type of each vector.
+- `num_rows` (`N`) and `num_videos` — sizes of the encoded set.
+- `source_dataset_id` — identifier of the source dataset.
+- `canonical_schema_version` — canonical schema the `frames.ndjson`
+  records conform to.
+- `created_at` — ISO-8601 creation timestamp.
+
+### Build behavior
+
+- Two passes: (1) inspect the dataset for per-video keyframe counts and
+  total rows; (2) stream keyframe images through the encoder in batches and
+  write rows incrementally. No keyframe set is materialized in memory.
+- Resumable via `.checkpoint.json` and `.build_meta.json`. The artifact is
+  complete only when `manifest.json` is written atomically; its absence
+  means the build is incomplete. A resume never re-encodes completed rows
+  and rejects a build whose encoder embedding space (or dimension/dtype)
+  differs from the recorded build metadata.
+- The final manifest is written only after the artifact passes
+  `validate_embedding_artifact(manifest, artifact_dir)`, which checks row
+  counts, dimensionality, dtype, and that every frame record parses.
+- Building over an already-complete artifact with `resume=True` validates
+  and returns the existing manifest without recomputation; `resume=False`
+  with an existing final manifest is rejected to avoid silent overwrites.
+
+### Serialization helpers
+
+- `write_manifest(path, manifest)` / `read_manifest(path)` — JSON.
+- `write_frames(path, frames)` / `iter_frames(path)` — NDJSON of
+  `KeyframeTiming` records in row order.
+- `validate_embedding_artifact(manifest, artifact_dir)` — checks the two
+  required files and their consistency with the manifest.
+
+### Relationship to the index stage
+
+The index builder consumes the embedding artifact's rows: `embeddings.npy[i]`
+provides the vector and `frames.ndjson[i]` the canonical `KeyframeTiming`
+identity for indexed keyframe `i`. The index artifact therefore reuses the
+same row-order and identity contract as the embedding artifact, so an
+embedding build can be indexed directly without re-reading the raw dataset.
 
 ## Team evaluation dataset (`aic2026.evaluation`)
 

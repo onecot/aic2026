@@ -259,6 +259,43 @@ class Dataset:
         """
         return [timing.keyframe.keyframe_ordinal for timing in self.timings(video_id)]
 
+    def keyframe_image_path(self, video_id: str, keyframe_ordinal: int) -> Path:
+        """Return the raw image path for one keyframe.
+
+        The raw filename extension and zero-padding stay hidden behind this
+        accessor so consumers (e.g. embedding runners) never depend on the
+        raw ``keyframes/`` layout.
+
+        Expected input:
+            - video_id: the ``L*_V*`` id.
+            - keyframe_ordinal: the 1-based keyframe ordinal to look up.
+
+        Returns:
+            - The image file path for that keyframe.
+
+        Raises:
+            - ValueError: if ``video_id`` is malformed or the ordinal is
+              not a positive integer.
+            - MissingRecordError: if no keyframe image exists for the
+              ordinal.
+        """
+        self._require_valid_video_id(video_id)
+        if not isinstance(keyframe_ordinal, int) or keyframe_ordinal < 1:
+            raise ValueError(
+                f"keyframe_ordinal must be a positive integer, got {keyframe_ordinal!r}"
+            )
+        keyframes_dir = self._raw_root / "keyframes" / video_id
+        if not keyframes_dir.is_dir():
+            raise MissingRecordError(f"keyframes directory missing for {video_id}: {keyframes_dir}")
+        for extension in ("jpg", "jpeg", "png"):
+            candidate = keyframes_dir / f"{keyframe_ordinal:03d}.{extension}"
+            if candidate.is_file():
+                return candidate
+        raise MissingRecordError(
+            f"keyframe image missing for {video_id} ordinal {keyframe_ordinal}: "
+            f"{keyframes_dir}"
+        )
+
     def iter_keyframes(self, video_id: str) -> Iterator[KeyframeKey]:
         """Yield one canonical :class:`KeyframeKey` per keyframe.
 
