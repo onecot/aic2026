@@ -297,3 +297,74 @@ filenames, zero-padding, or npy layout. Currently the artifact's
 `embeddings.npy` is the lookup source; `index.bin` is reserved so a future
 ANN payload can replace or supplement it without changing the row-order or
 identity contract.
+
+## Team evaluation dataset (`aic2026.evaluation`)
+
+`data/eval/eval_set.csv` is a separate, team-created annotation dataset. It
+is read-only input: evaluation logic consumes canonical queries from
+`aic2026.evaluation`, not CSV dictionaries or raw column names.
+
+### CSV schema
+
+The current file has this exact ordered header:
+
+```text
+query_id,task,query_text_vi,query_text_en,gt_video_id,gt_frame_start,
+gt_frame_end,gt_answer,gt_events,annotator,note
+```
+
+- `query_id` is a unique non-empty identifier.
+- `task` is case-insensitively normalized to one of `kis`, `qa`, or `trake`.
+- `query_text_vi` is required; `query_text_en` is optional.
+- `gt_video_id` is normalized for surrounding CSV whitespace and validated as
+  canonical `VideoId` (`L<lane>_V<number>`).
+- `gt_frame_start` and `gt_frame_end` are required inclusive, non-negative
+  original-video frame indices; `start <= end`.
+- `gt_answer` is required only for QA.
+- `gt_events` is required only for TRAKE and is retained as one typed,
+  non-empty `EventAnnotation` text value.
+- `annotator` is required annotation provenance; `note` is optional.
+
+KIS must not contain QA answers or TRAKE events. QA must not contain a TRAKE
+event, and TRAKE must not contain a QA answer. These task-specific invariants
+make invalid annotations fail at load time rather than in a future evaluator.
+
+### Current observed data
+
+The checked-in team CSV contains 101 valid KIS rows, all with Vietnamese and
+English query text, one inclusive ground-truth frame range, and annotation
+metadata. `gt_answer` and `gt_events` are blank for every current row. Seven
+raw `gt_video_id` cells have a trailing carriage return; the loader strips
+surrounding whitespace during canonicalization without modifying the CSV.
+
+No non-empty TRAKE event payload is currently available, so no unobserved
+list/delimiter/nested-event syntax is assumed. A future structured event
+format must be introduced as an explicit contract version change.
+
+### CSV → canonical flow and public API
+
+```text
+data/eval/eval_set.csv
+        |
+        | RawEvaluationRow (all CSV cells are strings)
+        v
+load_eval_set(path)
+        |
+        v
+EvaluationSet[EvaluationQuery]
+```
+
+```python
+from aic2026.evaluation import load_eval_set
+
+evaluation_set = load_eval_set("data/eval/eval_set.csv")
+query = evaluation_set.get_query("kis_100")
+for query in evaluation_set.iter_queries("kis"):
+    pass
+```
+
+`EvaluationQuery` carries a validated task, Vietnamese/optional English text,
+canonical `VideoId`, `FrameRange`, task-specific `answer` / `event`, and
+`AnnotationMetadata`. The loader is deterministic, preserves CSV row order,
+and never writes or modifies the evaluation file. It does not score
+predictions or invoke retrieval.
