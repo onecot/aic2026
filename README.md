@@ -1,8 +1,12 @@
 # AIC 2026
 
-Project foundation for the AIC 2026 research work. The repository is
-being built as a reproducible, modular pipeline; the extract / embed /
-index / retrieval / evaluation stages are not implemented yet.
+Project foundation for the AIC 2026 research work: a reproducible, modular
+pipeline covering the dataset layer, image-embedding stage, index build,
+retrieval, KIS prediction, and KIS evaluation.
+
+For the full developer guide (per-stage Python API and CLI usage), see
+[`docs/usage.md`](docs/usage.md). Artifact schemas and data contracts are
+documented in [`docs/data-contracts.md`](docs/data-contracts.md).
 
 ## Setup
 
@@ -83,3 +87,17 @@ The schema of the raw dataset (video ids, keyframes, CLIP features,
 map-keyframes, objects, media-info) is documented in
 `docs/data-contracts.md`. Parsers and validated models live in
 `src/aic2026/contracts.py` and `src/aic2026/entities.py`.
+
+## KIS prediction
+
+Generate ranked KIS predictions from an index artifact:
+
+```bash
+aic2026 predict-kis \
+  --index-artifact data/interim/indexes/btc-batch1-full \
+  --output data/interim/predictions/kis.json \
+  --top-k 100 \
+  --query-text-field query_text_vi
+```
+
+See `aic2026 predict-kis --help` and `docs/usage.md` for all flags.
