@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+openclip = [
+    "open-clip-torch>=2.24",
+]
 dev = [
     "pytest>=8.0",
 ]

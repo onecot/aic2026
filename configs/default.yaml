@@ -18,3 +18,16 @@ data:
   # Root directory for derived artifacts (e.g. indexes), relative to the
   # repo root. Each index artifact lives in its own subdirectory.
   indexes_dir: data/interim/indexes
+
+models:
+  openclip:
+    backend: openclip
+    model_name: ViT-B-32
+    pretrained: laion2b_s34b_b79k
+    device: auto
+    precision: fp32
+    normalization: l2
+    # These are explicit run metadata. Update when changing the processing
+    # or tokenizer convention for an otherwise identical model/checkpoint.
+    preprocessing_id: openclip-default-v1
+    tokenizer_id: openclip-default-v1

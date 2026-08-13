@@ -20,6 +20,50 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class OpenClipConfig:
+    """Configuration for the optional OpenCLIP embedding backend.
+
+    Fields:
+        - backend: must be ``"openclip"``.
+        - model_name: OpenCLIP architecture name.
+        - pretrained: OpenCLIP pretrained/checkpoint identifier.
+        - device: ``auto``, ``cpu``, ``mps``, or ``cuda``.
+        - precision: output precision, ``fp32`` or ``fp16``.
+        - normalization: common image/text vector convention, ``l2`` or
+          ``none``.
+        - preprocessing_id: preprocessing pipeline revision identifier.
+        - tokenizer_id: tokenizer revision identifier.
+    """
+
+    backend: str
+    model_name: str
+    pretrained: str
+    device: str
+    precision: str
+    normalization: str
+    preprocessing_id: str
+    tokenizer_id: str
+
+    def __post_init__(self) -> None:
+        if self.backend != "openclip":
+            raise ValueError(f"openclip backend must be 'openclip', got {self.backend!r}")
+        for name, value in (
+            ("model_name", self.model_name),
+            ("pretrained", self.pretrained),
+            ("preprocessing_id", self.preprocessing_id),
+            ("tokenizer_id", self.tokenizer_id),
+        ):
+            if not isinstance(value, str) or value == "":
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.device not in ("auto", "cpu", "mps", "cuda"):
+            raise ValueError("device must be one of: auto, cpu, mps, cuda")
+        if self.precision not in ("fp32", "fp16"):
+            raise ValueError("precision must be one of: fp32, fp16")
+        if self.normalization not in ("l2", "none"):
+            raise ValueError("normalization must be one of: l2, none")
+
+
+@dataclass(frozen=True)
 class Config:
     """Effective configuration for a run.
 
@@ -28,10 +72,12 @@ class Config:
           absolute path when possible).
         - data_indexes_dir: root directory for derived artifacts such as
           indexes (resolved to an absolute path when possible).
+        - openclip: validated configuration for the OpenCLIP backend.
     """
 
     data_raw_dir: Path
     data_indexes_dir: Path
+    openclip: OpenClipConfig
 
 
 def project_root() -> Path:
@@ -82,9 +128,20 @@ def load_config(path: Path | None = None) -> Config:
     config_path = path or default_config_path()
     with config_path.open(encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
+    openclip_payload = payload["models"]["openclip"]
     return Config(
         data_raw_dir=_resolve(config_path, payload["data"]["raw_dir"]),
         data_indexes_dir=_resolve(config_path, payload["data"]["indexes_dir"]),
+        openclip=OpenClipConfig(
+            backend=openclip_payload["backend"],
+            model_name=openclip_payload["model_name"],
+            pretrained=openclip_payload["pretrained"],
+            device=openclip_payload["device"],
+            precision=openclip_payload["precision"],
+            normalization=openclip_payload["normalization"],
+            preprocessing_id=openclip_payload["preprocessing_id"],
+            tokenizer_id=openclip_payload["tokenizer_id"],
+        ),
     )
 
 

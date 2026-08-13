@@ -25,6 +25,35 @@ pytest
 Default configuration lives in `configs/default.yaml`. Experiment-specific
 overrides and CLI flags will be layered on top of it as the pipeline evolves.
 
+## OpenCLIP encoder backend
+
+The optional OpenCLIP backend implements the shared `EmbeddingEncoder`
+contract without making the core package depend on model libraries. Install
+its runtime dependencies when encoding is needed:
+
+```bash
+pip install -e ".[openclip]"
+```
+
+`configs/default.yaml` provides the `models.openclip` configuration block:
+model name, pretrained checkpoint, `auto`/`cpu`/`mps`/`cuda` device,
+`fp32`/`fp16` output precision, normalization, and explicit preprocessing /
+tokenizer revision identifiers. Instantiate it from application code with:
+
+```python
+from aic2026.config import load_config
+from aic2026.model_backends.openclip import OpenClipEncoder
+
+encoder = OpenClipEncoder(load_config().openclip)
+text_embedding = encoder.encode_text("example query")
+image_embedding = encoder.encode_image(image)
+```
+
+`encode_text_batch` and `encode_image_batch` support batches. Both image and
+text methods use the same configured normalization convention and return
+compatible `EmbeddingSpace` metadata. Model weights may be downloaded by
+OpenCLIP on first use; normal tests do not load a model or access the network.
+
 ## Dataset inspection
 
 The raw BTC-provided dataset lives under `data/raw/aic2026_batch1/`
