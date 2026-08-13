@@ -144,7 +144,8 @@ def build_index(
     meta_path = artifact_dir / _BUILD_META_FILENAME
 
     # Step 1: inspect or load meta
-    if resume and meta_path.exists():
+    resuming_from_metadata = resume and meta_path.exists()
+    if resuming_from_metadata:
         meta_payload = _read_json(meta_path)
         meta = _BuildMeta(
             num_rows=int(meta_payload["num_rows"]),
@@ -158,15 +159,17 @@ def build_index(
         meta = _inspect_dataset(dataset, video_ids=video_ids)
 
     # Resolve once and persist in build metadata so a resumed build cannot
-    # silently finish with a different model identity.
+    # silently finish with a different model identity. A new build accepts its
+    # explicit space; only an existing resumable build has a stored identity
+    # against which it must be compared.
     stored_space = (
         EmbeddingSpace.from_dict(meta.embedding_space)
         if meta.embedding_space is not None
         else legacy_embedding_space(meta.embedding_dim, meta.embedding_dtype)
     )
-    if embedding_space is not None and embedding_space != stored_space:
+    if resuming_from_metadata and embedding_space is not None and embedding_space != stored_space:
         raise ValueError("provided embedding_space does not match the resumable build metadata")
-    resolved_space = embedding_space or stored_space
+    resolved_space = stored_space if resuming_from_metadata else (embedding_space or stored_space)
     if resolved_space.embedding_dim != meta.embedding_dim:
         raise ValueError(
             f"embedding_space dim {resolved_space.embedding_dim} != dataset dim {meta.embedding_dim}"

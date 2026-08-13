@@ -5,6 +5,7 @@ import os
 
 from aic2026.dataset import Dataset
 from aic2026.index_builder import build_index
+from aic2026.embeddings import EmbeddingSpace
 from aic2026.index_artifact import read_manifest, iter_frames
 
 
@@ -78,6 +79,31 @@ def test_build_index_basic(tmp_path: Path):
     assert len(frames) == 3
     # check that manifest embedding dim matches file
     assert emb.shape[1] == m.embedding_dim
+
+
+def test_new_build_accepts_explicit_embedding_space(tmp_path: Path):
+    raw = make_raw_dataset(tmp_path)
+    artifact = tmp_path / "model_identified_artifact"
+    embedding_space = EmbeddingSpace(
+        backend="test-backend",
+        model_id="test-model",
+        checkpoint_id="test-checkpoint",
+        space_id="test-space-v1",
+        embedding_dim=8,
+        output_dtype="float16",
+        normalization="l2",
+        preprocessing_id="test-preprocess-v1",
+    )
+
+    manifest = build_index(
+        Dataset(raw),
+        artifact,
+        artifact_id="model-identified-test",
+        embedding_space=embedding_space,
+    )
+
+    assert manifest.embedding_space == embedding_space
+    assert read_manifest(artifact / "manifest.json").embedding_space == embedding_space
 
 
 def test_resume_behavior(tmp_path: Path):
