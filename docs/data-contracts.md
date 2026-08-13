@@ -368,3 +368,57 @@ canonical `VideoId`, `FrameRange`, task-specific `answer` / `event`, and
 `AnnotationMetadata`. The loader is deterministic, preserves CSV row order,
 and never writes or modifies the evaluation file. It does not score
 predictions or invoke retrieval.
+
+## KIS scoring (`aic2026.kis_scoring`)
+
+The KIS scorer consumes canonical `EvaluationQuery` values and explicit
+`KisPrediction` values. It does not invoke retrieval, encode a query, or
+inspect raw BTC files. A prediction carries only the ranked identity needed
+for KIS: `rank`, `video_id`, and original-video `frame_index`.
+
+A candidate is correct exactly when both conditions hold:
+
+```text
+candidate.video_id == query.ground_truth_video_id
+and
+query.ground_truth_frame_range.start <= candidate.frame_index
+    <= query.ground_truth_frame_range.end
+```
+
+The comparison deliberately uses `frame_index` only. `keyframe_ordinal` and
+`pts_time` are distinct canonical identifiers and must not be used for the
+organizer's inclusive original-frame ground-truth range.
+
+For each query and cutoff `k` in `{1, 5, 20, 50, 100}`:
+
+```text
+R@k = max(correct(candidate) for candidates whose rank <= k)
+```
+
+A query therefore receives binary R-Scores. Empty prediction lists and missing
+ranks never create a correct result. Fewer than `k` returned candidates are
+valid; the maximum is taken over the candidates that exist.
+
+For a complete KIS query set, aggregate each cutoff over all queries, then
+compute:
+
+```text
+Final Score = mean(R@1, R@5, R@20, R@50, R@100)
+```
+
+Public reusable functions are:
+
+```python
+from aic2026.kis_scoring import KisPrediction, evaluate_kis
+
+result = evaluate_kis(
+    kis_queries,
+    {"kis_100": [KisPrediction(rank=1, video_id="L21_V001", frame_index=29292)]},
+)
+print(result.score_at(1), result.final_score)
+```
+
+`evaluate_kis` requires prediction entries for exactly the supplied query ids,
+so an incomplete experiment cannot silently produce a partial benchmark.
+`KisEvaluationResult` retains per-query scores, aggregate `TopKScore` values,
+and `final_score`. QA and TRAKE scoring are intentionally not implemented.
