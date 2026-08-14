@@ -971,10 +971,11 @@ aic2026 objects-analyze  - analyze BTC object detections for KIS retrieval usefu
 aic2026 object-rerank-kis - rerank a KIS prediction artifact with object detections.
 scripts/analyze_kis_errors.py - categorize KIS retrieval failures (HIT / NEAR_VIDEO / FAIL).
 scripts/analyze_keyframes.py - analyze BTC keyframe extraction quality for KIS (Section 15).
+scripts/deduplicate_keyframes.py - deduplicate keyframes before split/embed (Section 17).
 scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section 16).
-scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 17).
-scripts/merge_embedding_shards.py - validate + merge completed shards (Section 17).
-scripts/create_experiment_manifest.py - record experiment metadata (Section 18).
+scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
+scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
+scripts/create_experiment_manifest.py - record experiment metadata (Section 19).
 ```
 
 ## 14. Object-based reranking of KIS predictions
@@ -1321,14 +1322,72 @@ clean run; for real models only batch-boundary float noise (~1e-8) may differ.
 ### Distributed usage example
 
 For a laptop cluster, use the deterministic split/embed/merge workflow in
-Section 17: split the keyframe list into balanced worker inputs, embed one
+Section 18: split the keyframe list into balanced worker inputs, embed one
 worker per machine, then merge the shards back into a single artifact.
 
 Each worker's shard is independently resumable, and a worker may resume on a
 different machine (device changes are allowed). The merged artifact records
 the shared `embedding_space` identity before building an index.
 
-## 17. Distributed shard workflow (split -> embed -> merge -> index)
+## 17. Deduplicated keyframe artifact
+
+The BTC-provided `frames.ndjson` may contain duplicate records: the same
+`(video_id, frame_index)` key (the 0-based position of the keyframe in the
+original encoded video) can appear more than once. For example the first
+5000 records of the raw artifact contain duplicates such as
+`('L21_V006', 0)`, `('L21_V007', 0)`, ... (about 614 duplicate records across
+the full 177,321-record artifact).
+
+The distributed splitter (Section 18) intentionally rejects duplicate
+keyframes: splitting duplicates into different workers would make the merge
+reject the artifact after wasting embedding time. Deduplication is therefore a
+separate preprocessing step that produces a distinct, reproducible artifact,
+and downstream experiments should reference the deduplicated artifact rather
+than the raw BTC one.
+
+`scripts/deduplicate_keyframes.py` implements Phase 0 (logic in
+`aic2026.keyframe_dedup`, `deduplicate_keyframes`):
+
+```bash
+python scripts/deduplicate_keyframes.py \
+  --input data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
+  --output data/interim/keyframes/btc-v1-dedup/frames.ndjson \
+  --report data/interim/keyframes/btc-v1-dedup/dedup_report.json
+```
+
+Behavior:
+
+- Key identity is `(video_id, frame_index)`.
+- **Keep-first strategy**: the first occurrence of each key is kept; later
+  occurrences are dropped. `strategy` in the report is always `"keep_first"`.
+- The original ordering of the remaining records is preserved.
+- The input artifact is never modified.
+- The output is written atomically (same-directory temp file + rename), so a
+  failed or interrupted run never leaves a partial artifact that looks valid;
+  on any error no output or report is produced.
+- When `--report` is omitted, the report is written as `dedup_report.json`
+  next to `--output`.
+
+The JSON report (`DedupReport`, schema version 1.0) records `source_path`,
+`output_path`, `original_records`, `unique_records`, `removed_duplicates`,
+`duplicate_examples` (the first duplicate keys, first-seen order), and
+`strategy`:
+
+```text
+Original records:   177321
+Unique records:     176707
+Removed duplicates: 614
+Strategy:           keep_first
+Output:             data/interim/keyframes/btc-v1-dedup/frames.ndjson
+Report:             data/interim/keyframes/btc-v1-dedup/dedup_report.json
+```
+
+After deduplication the output is a canonical `frames.ndjson` that the
+splitter accepts. Experiments that embed the full keyframe set must start from
+this deduplicated artifact so every `(video_id, frame_index)` appears exactly
+once in the final embedding artifact.
+
+## 18. Distributed shard workflow (split -> embed -> merge -> index)
 
 Section 16 built a single resumable shard. For a laptop cluster, split the
 full keyframe set into balanced, deterministic worker inputs, embed one worker
@@ -1465,7 +1524,7 @@ python scripts/merge_embedding_shards.py \
 This exercises input discovery, splitting, embedding, and merging end to end on
 a tiny subset without running the full 873-video set.
 
-## 18. Experiment tracking
+## 19. Experiment tracking
 
 Now that experiments flow through split -> embed -> merge -> index -> evaluate,
 distinct model runs (OpenCLIP, Jina, SigLIP, MobileCLIP, ...) must not be
