@@ -274,3 +274,77 @@ configs, and every degradation appears at R@20 and above.
 - Keep the baseline retrieval output unchanged.
 - This records one specific aggregation method; it does not claim temporal
   methods are ineffective in general.
+
+---
+
+## Temporal Bonus Reranking Experiments
+
+Post-processing study on the same retrieval pipeline as the temporal
+aggregation experiments, testing whether re-ranking the raw retrieval
+predictions with a per-frame temporal bonus improves KIS scoring.
+
+**Context**
+- **Backbone:** OpenCLIP `ViT-L-14`
+- **Checkpoint:** `laion2b_s32b_b82k`
+- **Query field:** `query_text_en`
+- **Index artifact:** `data/interim/indexes/openclip-l14-laion2b-full`
+- **Prediction artifact:** `kis-l14-laion2b-full-en-top1000.json`
+- **Evaluation:** KIS scoring (`evaluate_kis`, cutoffs R@1/R@5/R@20/R@50/R@100;
+  Final = mean of the five R@k values) on the shared eval set
+  (`data/eval/eval_set.csv`, 101 queries)
+
+**Pipeline:** `predict-kis` (retrieval, `top_k=1000`) → temporal bonus
+reranking (`aic2026.temporal_reranking`) → `evaluate_kis`. The reranking groups
+each query's predictions by `video_id`, sorts frames by `frame_index`, and
+boosts every prediction by
+
+```text
+new_score = original_score + lambda_weight * temporal_support
+```
+
+where `temporal_support` counts how many predictions from the same video are
+within `window_size` frames (the current frame itself excluded), then re-ranks
+by `new_score` in descending order.
+
+### Baseline (no temporal reranking)
+
+- `top_k`: 1000
+- R@1: 0.108911
+- R@5: 0.257426
+- R@20: 0.366337
+- R@50: 0.455446
+- R@100: 0.534653
+- **Final: 0.344554**
+
+This matches the temporal aggregation baseline and Experiment 3 (same model,
+checkpoint, index, and evaluation set), recorded here as the untouched
+retrieval output the reranking stage consumes.
+
+### Temporal bonus
+
+Configuration:
+- `window_size`: 5
+
+| `lambda_weight` | R@1 | R@5 | R@20 | R@50 | R@100 | Final |
+|-----------------|---------|---------|---------|---------|---------|---------|
+| 0.01 | 0.079208 | 0.227723 | 0.316832 | 0.405941 | 0.504950 | **0.306931** |
+| 0.05 | 0.019802 | 0.069307 | 0.178218 | 0.326733 | 0.396040 | **0.198020** |
+| 0.1 | 0.000000 | 0.029703 | 0.079208 | 0.217822 | 0.356436 | **0.136634** |
+
+All three temporal bonus settings degraded every cutoff relative to the
+baseline, and Final fell as `lambda_weight` increased. R@1 was hit hardest:
+from `0.108911` at baseline down to `0.079208` at `lambda_weight=0.01` and
+`0.000000` at `lambda_weight=0.1`.
+
+### Conclusion
+
+- Temporal bonus reranking consistently reduced KIS performance on this
+  evaluation set relative to the untouched baseline.
+- Even a small temporal weight (`lambda_weight=0.01`) degraded the baseline.
+- Larger `lambda_weight` values caused severe ranking degradation.
+- The current temporal support heuristic likely rewards dense frame clusters
+  without enough awareness of exact temporal localization.
+- The experiment suggests that raw CLIP similarity ranking is a stronger
+  signal for KIS than this naive temporal consistency heuristic.
+- This records one specific temporal bonus reranking strategy; it does not
+  claim temporal methods in general are ineffective.
