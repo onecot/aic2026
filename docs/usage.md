@@ -44,7 +44,11 @@ CLI commands exist (`aic2026 inspect`, `aic2026 predict-kis`,
 `aic2026 temporal-expand-kis`, `aic2026 media-info-search`,
 `aic2026 media-info-evaluate`, `aic2026 media-info-report`,
 `aic2026 objects-analyze`, `aic2026 object-rerank-kis`). The embedding and
-index stages are Python-API only and are composed in scripts.
+index stages are Python-API only and are composed in scripts. Analysis-only
+CLIs live under `scripts/` (e.g. `scripts/analyze_kis_errors.py`,
+`scripts/analyze_keyframes.py`, `scripts/embed_shard.py`,
+`scripts/split_embedding_shards.py`, `scripts/merge_embedding_shards.py`,
+`scripts/create_experiment_manifest.py`; Sections 15-18).
 
 ## 2. Dataset stage
 
@@ -965,6 +969,12 @@ aic2026 media-info-evaluate - measure video-level retrieval of media-info text.
 aic2026 media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
 aic2026 objects-analyze  - analyze BTC object detections for KIS retrieval usefulness.
 aic2026 object-rerank-kis - rerank a KIS prediction artifact with object detections.
+scripts/analyze_kis_errors.py - categorize KIS retrieval failures (HIT / NEAR_VIDEO / FAIL).
+scripts/analyze_keyframes.py - analyze BTC keyframe extraction quality for KIS (Section 15).
+scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section 16).
+scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 17).
+scripts/merge_embedding_shards.py - validate + merge completed shards (Section 17).
+scripts/create_experiment_manifest.py - record experiment metadata (Section 18).
 ```
 
 ## 14. Object-based reranking of KIS predictions
@@ -1106,3 +1116,450 @@ Run id: object-rerank-kis-run-20260814T050833Z-l1-c0.3-nlower-mmax
 The full `evaluate_kis` metrics shown in earlier sections are reproduced by
 feeding the reranked artifact to `load_kis_predictions_for_scoring` +
 `evaluate_kis` exactly like any other prediction artifact.
+
+---
+
+## 15. BTC keyframe extraction analysis for KIS
+
+Measures how well the current BTC-provided keyframes cover the KIS
+ground-truth events, before implementing any new keyframe extractor. This is a
+read-only analysis step: it never runs or modifies retrieval, the embedding
+pipeline, the scorer, or evaluation.
+
+Source: `aic2026.keyframe_analysis` (`run_keyframe_analysis`,
+`load_keyframes`, `analyze_keyframe_statistics`, `analyze_gt_coverage`,
+`build_error_report`, `analyze_clip_comparison`, `format_report`,
+`write_report`). The CLI is `scripts/analyze_keyframes.py`.
+
+### Inputs
+
+- **Keyframe set:** a canonical artifact `frames.ndjson` listing the current
+  keyframes with their original-video `frame_index`
+  (e.g. `data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson`).
+- **Evaluation set:** `data/eval/eval_set.csv` (KIS queries).
+- **CLIP baseline:** a `predict-kis` prediction artifact
+  (e.g. `data/interim/predictions/kis-l14-laion2b-full-en-top1000.json`).
+
+### Report sections
+
+1. **Keyframe statistics** — total videos, total keyframes (unique original
+   frames), raw `frames.ndjson` record count and duplicate-record count, mean
+   unique keyframes per video, and the per-video distribution (min/max,
+   p50/p90/p95). When a `frames.ndjson` records the same original frame more
+   than once, the frame is counted once for coverage and per-video statistics;
+   the raw record and duplicate counts are reported so the statistics reconcile
+   with the artifact row count.
+2. **GT frame coverage** — for each query, whether a keyframe falls inside the
+   GT frame interval (exact hit) and the minimum absolute frame distance from
+   any keyframe of the GT video to the interval (relaxed hit). Summaries report
+   the exact-hit count/percentage and relaxed-hit percentages at thresholds
+   `<=10`, `<=30`, `<=60`, `<=150`, `<=300` frames (configurable). Queries
+   whose GT video has no keyframes have no defined distance.
+3. **Per-query error report** — every miss (no exact hit), with query id, GT
+   video, GT range, closest keyframe `frame_index`, distance, and number of
+   keyframes in the GT video, sorted worst misses first (no-keyframe videos
+   first, then by distance descending).
+4. **CLIP baseline comparison** — for each query, whether the GT video / GT
+   frame appears in the CLIP top-k predictions and whether missing keyframe
+   coverage can explain a frame failure. Exclusive per-query categories:
+
+   - `GT event covered by keyframes` — a keyframe lies inside the GT interval,
+     so the correct frame is extractable and any CLIP failure is a ranking
+     problem, not a coverage problem.
+   - `GT event not covered by keyframes` — the GT interval has no keyframe.
+   - `GT video retrieved but frame coverage issue` — the most specific case:
+     CLIP retrieved the GT video but not a GT frame, and the GT event is not
+     covered by a keyframe, so the coverage gap can explain the frame failure.
+
+### Python API
+
+```python
+from aic2026.keyframe_analysis import run_keyframe_analysis, write_report
+
+report = run_keyframe_analysis(
+    evaluation_set_path="data/eval/eval_set.csv",
+    frames_path="data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson",
+    clip_predictions_path="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
+    relaxed_thresholds=(10, 30, 60, 150, 300),
+    prediction_top_k=1000,
+)
+write_report("data/analysis/keyframes/current_keyframe_analysis.json", report)
+```
+
+`run_keyframe_analysis` raises `FileNotFoundError` when an input path is absent
+and `ValueError` for invalid queries, thresholds, or prediction payloads.
+
+### CLI
+
+```bash
+python scripts/analyze_keyframes.py \
+  --eval-csv data/eval/eval_set.csv \
+  --frames data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
+  --clip-predictions data/interim/predictions/kis-l14-laion2b-full-en-top1000.json \
+  --output data/analysis/keyframes/current_keyframe_analysis.json
+```
+
+Available flags: `--eval-csv`, `--frames`, `--clip-predictions`,
+`--relaxed-thresholds` (comma-separated distances, default
+`10,30,60,150,300`), `--top-k` (default 1000), and `--output` (default
+`data/analysis/keyframes/current_keyframe_analysis.json`). The human-readable
+report is printed to stdout and the full report is written as structured JSON
+(atomic write) to `--output`.
+
+## 16. Resumable, hardware-aware shard embedding
+
+Builds a bounded embedding "shard" from a canonical artifact ``frames.ndjson``
+using a reusable :class:`ImageEmbedder`, designed so the full keyframe set can
+later be embedded in parallel across multiple laptops and merged into a full
+embedding artifact. It is distinct from the in-repo dataset embedding runner
+(Section 4): it reads a ``frames.ndjson`` directly, is device-aware, and
+records a shard manifest.
+
+Only the first ``--max-frames`` records of ``frames.ndjson`` are embedded (or
+all when omitted), so the CLI doubles as a tiny-subset validation tool without
+running the full dataset.
+
+### Interface
+
+`aic2026.image_embedder` defines the reusable interface and hardware handling:
+
+- `ImageEmbedder` — protocol with `encode_images(batch_images) -> (B, D)`
+  array, plus `model_name`, `embedding_dim`, `device`, and `embedding_space`.
+- `resolve_device(requested, ...)` — auto-selection priority **CUDA > MPS >
+  CPU**; accepts `auto|cuda|mps|cpu` and raises on an unavailable requested
+  accelerator.
+- `create_image_embedder(model, device, precision, config)` — builds an
+  embedder from a spec `[backend:]model[:pretrained]` (default backend
+  `openclip`). Register new backends (Jina CLIP, SigLIP, MobileCLIP, ...) with
+  `@register_embedder("name")`.
+- `OpenClipImageEmbedder` (in `aic2026.model_backends.openclip`) adapts the
+  existing OpenCLIP encoder to this interface.
+
+`aic2026.embedding_shard.embed_shard(...)` performs the resumable build and
+returns a `ShardManifest`.
+
+### How to run
+
+```bash
+python scripts/embed_shard.py \
+  --frames data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
+  --output-dir data/test_embedding/shard1 \
+  --model openclip:ViT-B-32:laion2b_s34b_b79k \
+  --max-frames 100 \
+  --device auto \
+  --batch-size 32
+```
+
+Arguments: `--frames` (canonical frames.ndjson), `--output-dir`, `--model`
+(default: the config's OpenCLIP model), `--device auto|cuda|mps|cpu` (default
+`auto`), `--batch-size` (default 32), `--max-frames` (testing/subset),
+`--worker-id` (default 0), `--keyframes-dir` (default: config `data.raw_dir`),
+`--precision fp32|fp16`, and `--progress auto|on|off` (default `auto`). The CLI
+prints the resolved device and model identity before embedding.
+
+### Progress reporting
+
+While embedding, the CLI reports throttled progress (at most once every few
+seconds or per batch, never per frame) with the current/elapsed frame counts,
+percentage, a progress bar, elapsed time, throughput (frames/s), and the
+estimated time remaining, then a stage-timing summary:
+
+```text
+[=======>........] 42.5% | 75200/177321 frames  elapsed=01:35:20 speed=13.1 frames/s ETA=02:12:40
+
+Stage timing:
+load_frames: 2.1s
+load_model: 45.3s
+encode: 03:21:10
+write_outputs: 8.4s
+```
+
+`--progress` behavior:
+
+- `auto` (default): single-line interactive updates on a terminal; throttled
+  `INFO` log lines (visible with `-v`) when output is piped to a file or log.
+- `on`: force interactive updates even when not attached to a terminal.
+- `off`: disable all progress reporting (no effect on outputs).
+
+Reporting is metadata only: it never changes embeddings, frames, checkpoints,
+or manifests. The reusable logic lives in `aic2026.progress`
+(`ProgressReporter`, `StageTimer`, `format_duration`, `estimate_eta`).
+
+### Output contract
+
+Each shard directory contains:
+
+```text
+checkpoint.json   resume state (see below)
+embeddings.npy    dense (N, D) matrix; row i <-> frames[i]
+frames.ndjson     the shard's keyframe records, in row order
+manifest.json     shard metadata (written only on successful completion)
+```
+
+`embeddings[i]` always corresponds exactly to `frames.ndjson[i]`. The manifest
+records `model`, `embedding_dim`, `dtype`, `device`, `num_embeddings`,
+`num_videos`, `source_frames`, the full `embedding_space`, and `created_at`.
+
+### Resume behavior
+
+Progress is checkpointed atomically after each batch into `checkpoint.json`,
+recording `completed_frame_count`, `completed_video_ids`, `model`, `device`,
+`timestamp`, `total_frames`, `worker_id`, and `source_frames`.
+
+- An interrupted run leaves no `manifest.json` (partial outputs are never
+  exposed as valid); re-running the same command resumes from the checkpoint
+  and skips already-embedded frames.
+- A resumed run must match the original `model`, `device`, `worker_id`,
+  `source_frames`, and `total_frames`; otherwise it fails with an explicit
+  error instead of silently producing a mixed artifact.
+- Embeddings are stored via memory-mapped files, and the checkpoint and
+  manifest are written atomically, so a crash does not corrupt partial output.
+
+For a deterministic stub-embedder the resume output is byte-identical to a
+clean run; for real models only batch-boundary float noise (~1e-8) may differ.
+
+### Distributed usage example
+
+For a laptop cluster, use the deterministic split/embed/merge workflow in
+Section 17: split the keyframe list into balanced worker inputs, embed one
+worker per machine, then merge the shards back into a single artifact.
+
+Each worker's shard is independently resumable, and a worker may resume on a
+different machine (device changes are allowed). The merged artifact records
+the shared `embedding_space` identity before building an index.
+
+## 17. Distributed shard workflow (split -> embed -> merge -> index)
+
+Section 16 built a single resumable shard. For a laptop cluster, split the
+full keyframe set into balanced, deterministic worker inputs, embed one worker
+per machine, merge the completed shards back into one artifact, then build the
+index. All three steps are reproducible and resumable.
+
+```text
+1. split      scripts/split_embedding_shards.py   (once, on any machine)
+2. distribute worker_*/frames.ndjson to the workers
+3. embed      scripts/embed_shard.py              (one worker per machine)
+4. merge      scripts/merge_embedding_shards.py   (once, on any machine)
+5. index      build index from the merged artifact (Section 4)
+```
+
+### Step 1: split (deterministic and balanced)
+
+```bash
+python scripts/split_embedding_shards.py \
+  --frames data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
+  --num-workers 5 \
+  --output-dir data/splits/
+```
+
+Produces:
+
+```text
+data/splits/
+    split_manifest.json
+    worker_000/frames.ndjson
+    ...
+    worker_004/frames.ndjson
+```
+
+Splitting is workload-based, not a plain row cut: each video is kept intact and
+assigned whole to the least-loaded worker, so frame counts stay balanced while
+videos are never split across machines. It is deterministic (same input +
+same `--num-workers` => identical splits), preserves frame order inside each
+worker, and never duplicates or drops frames. `split_manifest.json` records
+`source_frames`, `num_workers`, and per-worker `worker_id`, `num_frames`,
+`num_videos`, `video_ids`. Re-running into an existing split fails unless
+`--overwrite` is given.
+
+**Duplicate keyframes are rejected.** Before assigning frames, the splitter
+checks for duplicate keyframes keyed by `(video_id, frame_index)` (the 0-based
+position in the original video). If the input contains duplicates, it fails
+fast with an error reporting the total duplicate count and a few example keys,
+e.g.:
+
+```text
+error: input frames file ... contains 7 duplicate keyframes (keyed by
+(video_id, frame_index)); duplicate keys e.g. ('L21_V006', 0),
+('L21_V007', 0), ... Splitting would spread duplicates across workers and the
+merge would reject them; create a deduplicated frames artifact first ...
+```
+
+The splitter deliberately does **not** deduplicate: a split must preserve the
+experiment input exactly, and duplicates distributed across workers would later
+make the merge reject the artifact after wasting embedding time. If your
+source `frames.ndjson` contains duplicate keyframes, create a deduplicated
+frames artifact first (keeping one record per `(video_id, frame_index)`, without
+modifying the original data) and split that instead.
+
+### Steps 2-3: distribute and embed (one worker per machine)
+
+Copy each `worker_<id>/frames.ndjson` to its machine (or run against a shared
+filesystem). Embed each worker input into a shard directory:
+
+```bash
+# machine A (worker 0, GPU):
+python scripts/embed_shard.py --frames worker_000/frames.ndjson \
+  --output-dir shards/worker_000 --worker-id 0 \
+  --model openclip:ViT-L-14:laion2b_s32b_b82k --device auto
+
+# machine B (worker 1, CPU-only):
+python scripts/embed_shard.py --frames worker_001/frames.ndjson \
+  --output-dir shards/worker_001 --worker-id 1 \
+  --model openclip:ViT-L-14:laion2b_s32b_b82k --device cpu
+```
+
+Each shard is independently resumable. Resuming is strict about the model, the
+embedding space, the source frames, the shard size, and the worker id; a
+changed device or precision is allowed and logged as a warning, so a worker can
+be resumed on a different machine (e.g. a GPU shard continued on CPU). The
+`embedding_space` identity must be identical across all workers because it is
+part of the merge validation.
+
+### Step 4: merge
+
+```bash
+python scripts/merge_embedding_shards.py \
+  --shards shards/worker_000 shards/worker_001 shards/worker_002 \
+  --output-dir data/interim/embeddings/merged/
+```
+
+Produces `embeddings.npy`, `frames.ndjson`, and `manifest.json`
+(`model`, `embedding_dim`, `total_embeddings`, `source_shards`,
+`embedding_space`, `created_at`). The merge:
+
+- rejects incomplete shards (no `manifest.json`);
+- rejects mixed models, dimensions, or embedding spaces;
+- rejects any duplicate keyframe across shards;
+- concatenates in deterministic worker_id order (directory name tie-break);
+- guarantees `embeddings[i]` <-> `frames.ndjson[i]`.
+
+Re-running into an existing merged output fails unless `--overwrite` is given.
+
+### Step 5: build the index
+
+Feed the merged artifact (Section 4 conventions) into the index builder.
+Because every worker shard recorded the same `embedding_space`, the merged
+matrix and its `embedding_space` identity are directly consumable by the
+existing embedding/index pipeline.
+
+### Exact smoke-test (small subset, no full run)
+
+```bash
+# take the first 570 records (3 videos) of the real keyframe set
+head -570 data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson > /tmp/frames570.ndjson
+
+python scripts/split_embedding_shards.py --frames /tmp/frames570.ndjson \
+  --num-workers 3 --output-dir /tmp/splits
+
+python scripts/embed_shard.py --frames /tmp/splits/worker_000/frames.ndjson \
+  --output-dir /tmp/shards/worker_000 --worker-id 0 \
+  --model openclip:ViT-B-32:laion2b_s34b_b79k --device auto
+# ... repeat for worker_001, worker_002 ...
+
+python scripts/merge_embedding_shards.py \
+  --shards /tmp/shards/worker_000 /tmp/shards/worker_001 /tmp/shards/worker_002 \
+  --output-dir /tmp/merged
+# -> Merge complete: 570 embeddings from 3 shards
+```
+
+This exercises input discovery, splitting, embedding, and merging end to end on
+a tiny subset without running the full 873-video set.
+
+## 18. Experiment tracking
+
+Now that experiments flow through split -> embed -> merge -> index -> evaluate,
+distinct model runs (OpenCLIP, Jina, SigLIP, MobileCLIP, ...) must not be
+confused. Each experiment gets a small, self-describing manifest
+(`manifest.json`) recording its identity, provenance, and parameters. This is
+metadata/documentation infrastructure only: it does not modify retrieval,
+scoring, evaluation, embedding, or artifact-schema logic.
+
+The manifest lives in `aic2026.experiment_manifest` (`ExperimentManifest`,
+`save_manifest`, `load_manifest`). Required fields are `experiment_id`,
+`experiment_type` (`embedding`, `retrieval`, `reranking`, `fusion`, or any
+custom string), `created_at`, and `description`. Optional fields cover the
+embedding side (`model_name`, `embedding_space`, `embedding_dim`,
+`frames_source`, `split_manifest`, `workers`, `hardware`) and the retrieval
+side (`index_path`, `prediction_artifact`, `evaluation_set`, `metrics`), plus a
+free-form `parameters` dict. JSON output is deterministic (dataclass field
+order, sorted nested dicts) and written atomically.
+
+### Recommended layout
+
+```text
+experiments/
+    openclip-baseline/
+        manifest.json
+    jina-v1/
+        manifest.json
+    siglip-v1/
+        manifest.json
+```
+
+### Example
+
+```bash
+python scripts/create_experiment_manifest.py \
+  --output experiments/jina-v1/manifest.json \
+  --experiment-id jina-v1 \
+  --type embedding \
+  --model jina-clip-v2 \
+  --frames-source btc-keyframes-v1 \
+  --description "Jina CLIP embedding experiment" \
+  --parameter batch_size=64 \
+  --parameter seed=42
+```
+
+This writes:
+
+```json
+{
+  "schema_version": "1.0",
+  "experiment_id": "jina-v1",
+  "experiment_type": "embedding",
+  "created_at": "2026-08-14T...",
+  "description": "Jina CLIP embedding experiment",
+  "model_name": "jina-clip-v2",
+  "frames_source": "btc-keyframes-v1",
+  "parameters": {"batch_size": 64, "seed": 42}
+}
+```
+
+`--parameter` / `--metric` accept repeated `key=value` pairs whose values are
+typed (bool, int, float, else string), e.g. `--parameter fp16=true`. For a
+distributed run, also record the split and merge inputs:
+
+```bash
+python scripts/create_experiment_manifest.py \
+  --output experiments/openclip-baseline/manifest.json \
+  --experiment-id openclip-baseline \
+  --type embedding \
+  --model openclip:ViT-L-14:laion2b_s32b_b82k \
+  --frames-source data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
+  --split-manifest data/splits/split_manifest.json \
+  --workers 5 \
+  --hardware "3x mps, 2x cpu" \
+  --description "OpenCLIP L-14 distributed baseline" \
+  --parameter batch_size=64
+```
+
+Manifests can also be created and read from Python:
+
+```python
+from aic2026.experiment_manifest import load_manifest, new_manifest, save_manifest
+m = new_manifest(
+    experiment_id="siglip-v1",
+    experiment_type="retrieval",
+    description="SigLIP retrieval run",
+    model_name="siglip2",
+    index_path="data/interim/index.npy",
+    evaluation_set="data/eval/eval_set.csv",
+    metrics={"ndcg": 0.42},
+)
+save_manifest("experiments/siglip-v1/manifest.json", m)
+loaded = load_manifest("experiments/siglip-v1/manifest.json")
+```
+
+Keep one manifest per experiment directory, name it `manifest.json`, and treat
+`experiment_id` as globally unique so results from different models and runs
+can be compared without ambiguity.

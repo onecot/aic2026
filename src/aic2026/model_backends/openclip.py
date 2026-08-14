@@ -16,6 +16,7 @@ import numpy as np
 
 from aic2026.config import OpenClipConfig
 from aic2026.embeddings import Embedding, EmbeddingKind, EmbeddingSpace, Normalization
+from aic2026.image_embedder import resolve_device
 
 
 class OpenClipRuntimeError(RuntimeError):
@@ -56,21 +57,11 @@ def _resolve_device(requested: str, torch: Any) -> str:
     cuda_available = bool(torch.cuda.is_available())
     mps_backend = getattr(torch.backends, "mps", None)
     mps_available = bool(mps_backend is not None and mps_backend.is_available())
-    if requested == "auto":
-        if cuda_available:
-            return "cuda"
-        if mps_available:
-            return "mps"
-        return "cpu"
-    if requested == "cpu":
-        return "cpu"
-    if requested == "cuda" and cuda_available:
-        return "cuda"
-    if requested == "mps" and mps_available:
-        return "mps"
-    if requested in ("cuda", "mps"):
-        raise ValueError(f"requested device {requested!r} is not available")
-    raise ValueError(f"unsupported device {requested!r}; expected auto, cpu, mps, or cuda")
+    return resolve_device(
+        requested,
+        cuda_available=cuda_available,
+        mps_available=mps_available,
+    )
 
 
 def _output_dtype(precision: str) -> np.dtype[Any]:
@@ -296,3 +287,97 @@ class OpenClipEncoder:
         if any(not isinstance(text, str) or text == "" for text in values):
             raise ValueError("texts must contain only non-empty strings")
         return values
+
+
+class OpenClipImageEmbedder:
+    """OpenCLIP adapter for the reusable :class:`ImageEmbedder` interface.
+
+    Wraps :class:`OpenClipEncoder` and exposes ``encode_images`` plus model
+    identity and the resolved runtime device, so the shard embedding pipeline
+    can drive OpenCLIP through the same interface as future backends (Jina
+    CLIP, SigLIP, MobileCLIP, ...).
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        pretrained: str | None = None,
+        device: str = "auto",
+        precision: str = "fp32",
+        config: OpenClipConfig | None = None,
+    ) -> None:
+        """Load the configured OpenCLIP model as an image embedder.
+
+        Expected input:
+            - model_name: OpenCLIP architecture name, e.g. ``ViT-B-32``.
+            - pretrained: OpenCLIP checkpoint id; defaults to the base config's
+              checkpoint when omitted.
+            - device: ``auto``, ``cpu``, ``mps``, or ``cuda``.
+            - precision: ``fp32`` or ``fp16``.
+            - config: optional base OpenClipConfig supplying defaults for
+              normalization/preprocessing/tokenizer identity.
+
+        Returns:
+            - A ready-to-use image embedder.
+
+        Raises:
+            - OpenClipRuntimeError: if optional model dependencies are missing.
+            - ValueError: if the configured device or model output is invalid.
+            - RuntimeError: if OpenCLIP cannot load the requested model/checkpoint.
+        """
+        base = config if config is not None else self._default_config()
+        cfg = OpenClipConfig(
+            backend="openclip",
+            model_name=model_name,
+            pretrained=pretrained or base.pretrained,
+            device=device,
+            precision=precision or base.precision,
+            normalization=base.normalization,
+            preprocessing_id=base.preprocessing_id,
+            tokenizer_id=base.tokenizer_id,
+        )
+        self._encoder = OpenClipEncoder(cfg)
+        self._model_name = f"openclip:{model_name}:{cfg.pretrained}"
+
+    @staticmethod
+    def _default_config() -> OpenClipConfig:
+        from aic2026.config import load_config
+
+        return load_config().openclip
+
+    @property
+    def model_name(self) -> str:
+        """Return the stable model identity (backend + arch + checkpoint)."""
+        return self._model_name
+
+    @property
+    def embedding_dim(self) -> int:
+        """Return the model's embedding dimension."""
+        return self._encoder.embedding_space.embedding_dim
+
+    @property
+    def device(self) -> str:
+        """Return the resolved concrete runtime device."""
+        return self._encoder.device
+
+    @property
+    def embedding_space(self) -> EmbeddingSpace:
+        """Return the embedding-space metadata of the wrapped encoder."""
+        return self._encoder.embedding_space
+
+    def encode_images(self, batch_images: Sequence[object]) -> np.ndarray:
+        """Encode a batch of images into an ``(B, D)`` embedding array.
+
+        Expected input:
+            - batch_images: a non-empty sequence of images accepted by the
+              OpenCLIP preprocess pipeline.
+
+        Returns:
+            - An ``(B, D)`` float array of normalized embeddings in the model's
+              ``output_dtype``, in the same order as ``batch_images``.
+
+        Raises:
+            - ValueError: if the batch is empty or the model output is invalid.
+        """
+        embeddings = self._encoder.encode_image_batch(batch_images)
+        return np.stack([embedding.vector for embedding in embeddings])
