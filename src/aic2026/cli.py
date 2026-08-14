@@ -5,21 +5,45 @@ Commands:
     predict-kis      - generate ranked KIS predictions from an index artifact.
     temporal-expand-kis - apply temporal window expansion to a KIS prediction
                           artifact and save an expanded prediction artifact.
+    media-info-search - rank videos by BM25 relevance over media-info text.
+    media-info-evaluate - measure video-level retrieval of media-info text.
+    media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
+    objects-analyze - analyze BTC object detections for KIS retrieval usefulness.
 
 CLI logic stays thin; the real work lives in reusable modules
 (``aic2026.inspection``, ``aic2026.config``, ``aic2026.kis_prediction_runner``,
-``aic2026.temporal_window_expansion``).
+``aic2026.temporal_window_expansion``, ``aic2026.media_info_retrieval``,
+``aic2026.media_info_evaluation``).
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 from aic2026.config import load_config
+from aic2026.evaluation import EvaluationTask, load_eval_set
 from aic2026.inspection import DatasetReport, inspect_dataset
-from aic2026.kis_prediction_runner import KisPredictionRunnerConfig, run_kis_prediction
+from aic2026.kis_prediction_runner import (
+    KisPredictionRunnerConfig,
+    load_kis_predictions_for_scoring,
+    run_kis_prediction,
+)
+from aic2026.media_info_evaluation import (
+    category_report_to_dict,
+    compare_to_clip_baseline,
+    evaluate_media_info_video_retrieval,
+    format_category_report,
+    format_report,
+)
+from aic2026.media_info_retrieval import (
+    MediaInfoIndex,
+    MediaInfoRetrievalConfig,
+)
 from aic2026.model_backends.openclip import OpenClipEncoder
+from aic2026.object_analysis import format_report as format_object_report
+from aic2026.object_analysis import run_object_analysis
 from aic2026.temporal_window_expansion import (
     TemporalWindowConfig,
     write_expanded_prediction_artifact,
@@ -193,6 +217,324 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable verbose logging.",
     )
+
+    media_info_parser = subparsers.add_parser(
+        "media-info-search",
+        help="Rank videos by BM25 relevance over media-info text.",
+    )
+    media_info_parser.add_argument(
+        "--media-info-dir",
+        type=Path,
+        default=None,
+        help="Path to the raw media-info directory (defaults to config raw_dir/media-info).",
+    )
+    media_info_parser.add_argument(
+        "--query",
+        dest="queries",
+        action="append",
+        default=None,
+        help="Query text to rank videos for; repeat to run multiple queries.",
+    )
+    media_info_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=10,
+        help="Number of ranked hits to return per query (default: 10).",
+    )
+    media_info_parser.add_argument(
+        "--k1",
+        type=float,
+        default=None,
+        help="BM25 term-frequency saturation (default: 1.5).",
+    )
+    media_info_parser.add_argument(
+        "--b",
+        type=float,
+        default=None,
+        help="BM25 length normalization (default: 0.75).",
+    )
+    media_info_parser.add_argument(
+        "--title-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the title field (default: 3.0).",
+    )
+    media_info_parser.add_argument(
+        "--keywords-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the keywords field (default: 2.0).",
+    )
+    media_info_parser.add_argument(
+        "--description-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the description field (default: 1.0).",
+    )
+    media_info_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional JSON path to write the ranked hits to.",
+    )
+    media_info_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    evaluate_parser = subparsers.add_parser(
+        "media-info-evaluate",
+        help="Measure video-level retrieval of media-info text against KIS ground truth.",
+    )
+    evaluate_parser.add_argument(
+        "--media-info-dir",
+        type=Path,
+        default=None,
+        help="Path to the raw media-info directory (defaults to config raw_dir/media-info).",
+    )
+    evaluate_parser.add_argument(
+        "--evaluation-set",
+        type=Path,
+        default=Path("data/eval/eval_set.csv"),
+        help="Path to evaluation CSV (default: data/eval/eval_set.csv).",
+    )
+    evaluate_parser.add_argument(
+        "--query-text-field",
+        choices=("query_text_vi", "query_text_en"),
+        default="query_text_en",
+        help="Query text field to retrieve with (default: query_text_en).",
+    )
+    evaluate_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=100,
+        help="Media-info retrieval cutoff (default: 100).",
+    )
+    evaluate_parser.add_argument(
+        "--clip-predictions",
+        type=Path,
+        default=None,
+        help=(
+            "Optional CLIP baseline prediction artifact for the error-analysis "
+            "comparison (default: data/interim/predictions/kis-l14-laion2b-full-en.json "
+            "when it exists)."
+        ),
+    )
+    evaluate_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional JSON path to write the evaluation metrics to.",
+    )
+    evaluate_parser.add_argument(
+        "--k1",
+        type=float,
+        default=None,
+        help="BM25 term-frequency saturation (default: 1.5).",
+    )
+    evaluate_parser.add_argument(
+        "--b",
+        type=float,
+        default=None,
+        help="BM25 length normalization (default: 0.75).",
+    )
+    evaluate_parser.add_argument(
+        "--title-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the title field (default: 3.0).",
+    )
+    evaluate_parser.add_argument(
+        "--keywords-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the keywords field (default: 2.0).",
+    )
+    evaluate_parser.add_argument(
+        "--description-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the description field (default: 1.0).",
+    )
+    evaluate_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    report_parser = subparsers.add_parser(
+        "media-info-report",
+        help=(
+            "Categorize KIS queries by whether media-info and the CLIP baseline "
+            "retrieve the GT video (MEDIA_ONLY / CLIP_ONLY / BOTH / NEITHER)."
+        ),
+    )
+    report_parser.add_argument(
+        "--media-info-dir",
+        type=Path,
+        default=None,
+        help="Path to the raw media-info directory (defaults to config raw_dir/media-info).",
+    )
+    report_parser.add_argument(
+        "--evaluation-set",
+        type=Path,
+        default=Path("data/eval/eval_set.csv"),
+        help="Path to evaluation CSV (default: data/eval/eval_set.csv).",
+    )
+    report_parser.add_argument(
+        "--query-text-field",
+        choices=("query_text_vi", "query_text_en"),
+        default="query_text_en",
+        help="Query text field to retrieve with (default: query_text_en).",
+    )
+    report_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=100,
+        help="Media-info retrieval cutoff (default: 100).",
+    )
+    report_parser.add_argument(
+        "--clip-predictions",
+        type=Path,
+        default=None,
+        help=(
+            "Optional CLIP baseline prediction artifact for the categorization "
+            "(default: data/interim/predictions/kis-l14-laion2b-full-en.json "
+            "when it exists)."
+        ),
+    )
+    report_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional JSON path to write the categorized report to.",
+    )
+    report_parser.add_argument(
+        "--k1",
+        type=float,
+        default=None,
+        help="BM25 term-frequency saturation (default: 1.5).",
+    )
+    report_parser.add_argument(
+        "--b",
+        type=float,
+        default=None,
+        help="BM25 length normalization (default: 0.75).",
+    )
+    report_parser.add_argument(
+        "--title-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the title field (default: 3.0).",
+    )
+    report_parser.add_argument(
+        "--keywords-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the keywords field (default: 2.0).",
+    )
+    report_parser.add_argument(
+        "--description-weight",
+        type=float,
+        default=None,
+        help="BM25 weight for the description field (default: 1.0).",
+    )
+    report_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    objects_parser = subparsers.add_parser(
+        "objects-analyze",
+        help="Analyze BTC object detections for KIS retrieval usefulness.",
+    )
+    objects_parser.add_argument(
+        "--objects-dir",
+        type=Path,
+        default=None,
+        help="Path to the raw objects collection (defaults to config raw_dir/objects).",
+    )
+    objects_parser.add_argument(
+        "--map-dir",
+        type=Path,
+        default=None,
+        help="Path to the raw map-keyframes collection (defaults to config raw_dir/map-keyframes).",
+    )
+    objects_parser.add_argument(
+        "--evaluation-set",
+        type=Path,
+        default=Path("data/eval/eval_set.csv"),
+        help="Path to evaluation CSV (default: data/eval/eval_set.csv).",
+    )
+    objects_parser.add_argument(
+        "--clip-predictions",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a CLIP KIS prediction artifact for the retrieval-potential "
+            "section (default: data/interim/predictions/"
+            "kis-l14-laion2b-full-en-top1000.json when it exists)."
+        ),
+    )
+    objects_parser.add_argument(
+        "--query-text-field",
+        choices=("query_text_vi", "query_text_en"),
+        default="query_text_en",
+        help="Query text field used for object-word extraction (default: query_text_en).",
+    )
+    objects_parser.add_argument(
+        "--confidence-thresholds",
+        type=str,
+        default="0.1,0.3,0.5,0.7",
+        help="Comma-separated confidence thresholds for vocabulary retention effects.",
+    )
+    objects_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.3,
+        help="Minimum detection score for GT / predicted object sets (default: 0.3).",
+    )
+    objects_parser.add_argument(
+        "--top-classes",
+        type=int,
+        default=20,
+        help="Number of top object classes reported (default: 20).",
+    )
+    objects_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=1000,
+        help="Number of CLIP predictions analyzed per query (default: 1000).",
+    )
+    objects_parser.add_argument(
+        "--max-videos",
+        type=int,
+        default=None,
+        help="Optional cap on videos scanned for vocabulary statistics.",
+    )
+    objects_parser.add_argument(
+        "--examples",
+        type=int,
+        default=5,
+        help="Number of matched/unmatched coverage examples reported (default: 5).",
+    )
+    objects_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional JSON path to write the analysis report to.",
+    )
+    objects_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
     return parser
 
 
@@ -254,6 +596,24 @@ def print_report(report: DatasetReport) -> None:
         print(f"  - {observation}")
 
 
+def _parse_confidence_thresholds(raw: str) -> tuple[float, ...]:
+    """Parse a comma-separated confidence threshold string.
+
+    Expected input:
+        - raw: e.g. ``"0.1,0.3,0.5,0.7"``.
+
+    Returns:
+        - Tuple of float thresholds.
+
+    Raises:
+        - ValueError: if any element is not a float in [0, 1].
+    """
+    values = tuple(float(part) for part in raw.split(","))
+    if any(not 0.0 <= value <= 1.0 for value in values):
+        raise ValueError("confidence thresholds must be in [0, 1]")
+    return values
+
+
 def configure_logging(verbose: bool) -> None:
     """Configure root logging level.
 
@@ -268,6 +628,85 @@ def configure_logging(verbose: bool) -> None:
     """
     level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+
+
+def _run_media_info_evaluation(
+    args: argparse.Namespace,
+    config: object,
+) -> tuple[
+    tuple,
+    object,
+    object | None,
+    object | None,
+    dict[str, object],
+]:
+    """Build the media-info index, evaluate, and compare with CLIP baseline.
+
+    Shared by ``media-info-evaluate`` and ``media-info-report``.
+
+    Expected input:
+        - args: parsed CLI arguments (media-info flags).
+        - config: loaded project config exposing ``data_raw_dir``.
+
+    Returns:
+        - ``(results, summary, comparison, clip_path, retrieval_config)``:
+          per-query results, aggregate summary, optional CLIP baseline
+          comparison, the resolved CLIP artifact path (or ``None``), and the
+          effective BM25 retrieval config.
+
+    Raises:
+        - FileNotFoundError / ValueError / OSError: for missing inputs or
+          invalid configuration; these are reported by the caller.
+    """
+    media_info_dir = args.media_info_dir or config.data_raw_dir / "media-info"
+    clip_path = args.clip_predictions
+    if clip_path is None:
+        default_clip = Path("data/interim/predictions/kis-l14-laion2b-full-en.json")
+        clip_path = default_clip if default_clip.is_file() else None
+    retrieval_config = MediaInfoRetrievalConfig(
+        k1=args.k1 if args.k1 is not None else 1.5,
+        b=args.b if args.b is not None else 0.75,
+        title_weight=args.title_weight if args.title_weight is not None else 3.0,
+        keywords_weight=args.keywords_weight if args.keywords_weight is not None else 2.0,
+        description_weight=args.description_weight if args.description_weight is not None else 1.0,
+    )
+    index = MediaInfoIndex.build_from_dir(
+        media_info_dir,
+        config=retrieval_config,
+    )
+    eval_set = load_eval_set(args.evaluation_set)
+    queries = tuple(eval_set.iter_queries(EvaluationTask.KIS))
+    if not queries:
+        raise ValueError("evaluation set contains no KIS queries")
+    results, summary = evaluate_media_info_video_retrieval(
+        queries,
+        index,
+        query_text_field=args.query_text_field,
+        top_k=args.top_k,
+    )
+    comparison = None
+    clip_predictions = None
+    if clip_path is not None:
+        clip_predictions = load_kis_predictions_for_scoring(clip_path)
+    if clip_predictions is not None:
+        results_by_query = {result.query_id: result for result in results}
+        try:
+            comparison = compare_to_clip_baseline(
+                queries,
+                results_by_query,
+                clip_predictions,
+                cutoff=args.top_k,
+            )
+        except ValueError as exc:
+            if args.clip_predictions is not None:
+                raise
+            logger.warning(
+                "CLIP baseline comparison skipped (%s); it does not cover this "
+                "evaluation set's queries",
+                exc,
+            )
+            comparison = None
+    return results, summary, comparison, clip_path, retrieval_config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -356,6 +795,169 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Expanded prediction artifact: {args.output}")
         print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
         print(f"Run id: {artifact.run_id}")
+        return 0
+
+    if args.command == "media-info-search":
+        config = load_config()
+        media_info_dir = args.media_info_dir or config.data_raw_dir / "media-info"
+        try:
+            retrieval_config = MediaInfoRetrievalConfig(
+                k1=args.k1 if args.k1 is not None else 1.5,
+                b=args.b if args.b is not None else 0.75,
+                title_weight=args.title_weight if args.title_weight is not None else 3.0,
+                keywords_weight=args.keywords_weight if args.keywords_weight is not None else 2.0,
+                description_weight=args.description_weight if args.description_weight is not None else 1.0,
+            )
+            index = MediaInfoIndex.build_from_dir(
+                media_info_dir,
+                config=retrieval_config,
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not args.queries:
+            print(f"error: at least one --query is required", file=sys.stderr)
+            return 1
+        results = {query: index.query(query, top_k=args.top_k) for query in args.queries}
+        if args.output is not None:
+            payload = {
+                "schema": {
+                    "num_documents": index.num_documents,
+                    "top_k": args.top_k,
+                    "config": retrieval_config.__dict__,
+                },
+                "queries": {
+                    query: [
+                        {"rank": hit.rank, "video_id": hit.video_id, "score": hit.score}
+                        for hit in hits
+                    ]
+                    for query, hits in results.items()
+                },
+            }
+            try:
+                with args.output.open("w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+            except OSError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            print(f"Ranked hits written to: {args.output}")
+        for query, hits in results.items():
+            print(f"Query: {query}")
+            for hit in hits:
+                print(f"  rank={hit.rank} video_id={hit.video_id} score={hit.score:.6f}")
+        return 0
+
+    if args.command == "media-info-evaluate":
+        config = load_config()
+        try:
+            results, summary, comparison, _clip_path, _retrieval_config = (
+                _run_media_info_evaluation(args, config)
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(format_report(summary, comparison=comparison), end="")
+        if args.output is not None:
+            payload = {
+                "metrics": summary.to_dict(),
+                "results": [
+                    {
+                        "query_id": result.query_id,
+                        "query_text": result.query_text,
+                        "gt_video_id": result.gt_video_id,
+                        "gt_rank": result.gt_rank,
+                        "hits": [
+                            {"rank": hit.rank, "video_id": hit.video_id, "score": hit.score}
+                            for hit in result.hits
+                        ],
+                    }
+                    for result in results
+                ],
+                "comparison": comparison.to_dict() if comparison is not None else None,
+            }
+            try:
+                with args.output.open("w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+            except OSError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            print(f"Metrics written to: {args.output}")
+        return 0
+
+    if args.command == "media-info-report":
+        config = load_config()
+        try:
+            _results, _summary, comparison, _clip_path, _retrieval_config = (
+                _run_media_info_evaluation(args, config)
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if comparison is None:
+            print(
+                "error: categorization requires a CLIP baseline; supply "
+                "--clip-predictions or ensure the default artifact exists",
+                file=sys.stderr,
+            )
+            return 1
+        print(format_category_report(comparison), end="")
+        if args.output is not None:
+            payload = category_report_to_dict(comparison)
+            try:
+                with args.output.open("w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+            except OSError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            print(f"Categorized report written to: {args.output}")
+        return 0
+
+    if args.command == "objects-analyze":
+        config = load_config()
+        objects_dir = args.objects_dir or config.data_raw_dir / "objects"
+        map_dir = args.map_dir or config.data_raw_dir / "map-keyframes"
+        clip_path = args.clip_predictions
+        if clip_path is None:
+            default_clip = Path("data/interim/predictions/kis-l14-laion2b-full-en-top1000.json")
+            clip_path = default_clip if default_clip.is_file() else None
+        if clip_path is None:
+            print(
+                "error: a CLIP prediction artifact is required; supply "
+                "--clip-predictions or ensure the default top-1000 artifact exists",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            thresholds = _parse_confidence_thresholds(args.confidence_thresholds)
+            report = run_object_analysis(
+                objects_dir=objects_dir,
+                map_dir=map_dir,
+                evaluation_set_path=args.evaluation_set,
+                clip_predictions_path=clip_path,
+                query_text_field=args.query_text_field,
+                thresholds=thresholds,
+                top_classes=args.top_classes,
+                min_confidence=args.min_confidence,
+                prediction_top_k=args.top_k,
+                example_limit=args.examples,
+                max_videos=args.max_videos,
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(format_object_report(report), end="")
+        if args.output is not None:
+            try:
+                with args.output.open("w", encoding="utf-8") as handle:
+                    json.dump(report.to_dict(), handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+            except OSError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            print(f"Object analysis written to: {args.output}")
         return 0
 
     parser.error(f"unknown command: {args.command}")
