@@ -263,10 +263,14 @@ class ExtractionConfig:
           exclusive with ``target_keyframes_per_video``).
         - max_side: longest side (pixels) of downscaled grayscale frames.
         - fps: optional fixed video frame rate override.
+        - jpeg_quality: JPEG quality in ``[1, 100]`` for the ``jpeg_size``
+          scorer.
+        - anchor_interval_seconds: optional uniform anchor spacing in seconds
+          (first and last frames are always anchors).
     """
 
     extractor: str = "dake"
-    extractor_version: str = "1.0"
+    extractor_version: str = "2.0"
     scorer: str = "frame_difference"
     frame_reader: str = "ffmpeg"
     min_temporal_distance: int = 30
@@ -275,6 +279,8 @@ class ExtractionConfig:
     sampling_ratio: float | None = None
     max_side: int = 64
     fps: float | None = None
+    jpeg_quality: int = 70
+    anchor_interval_seconds: float | None = None
 
     def __post_init__(self) -> None:
         _require(self.extractor == "dake", f"unsupported extractor {self.extractor!r}")
@@ -304,6 +310,14 @@ class ExtractionConfig:
             "max_side must be a positive integer",
         )
         _require(self.fps is None or float(self.fps) > 0.0, "fps must be > 0 when provided")
+        _require(
+            isinstance(self.jpeg_quality, int) and not isinstance(self.jpeg_quality, bool) and 1 <= self.jpeg_quality <= 100,
+            "jpeg_quality must be an integer in [1, 100]",
+        )
+        _require(
+            self.anchor_interval_seconds is None or float(self.anchor_interval_seconds) > 0.0,
+            "anchor_interval_seconds must be > 0 when provided",
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""
@@ -318,6 +332,8 @@ class ExtractionConfig:
             "sampling_ratio": self.sampling_ratio,
             "max_side": self.max_side,
             "fps": self.fps,
+            "jpeg_quality": self.jpeg_quality,
+            "anchor_interval_seconds": self.anchor_interval_seconds,
         }
 
     @classmethod
@@ -325,7 +341,7 @@ class ExtractionConfig:
         """Deserialize from a :meth:`to_dict` dict."""
         return cls(
             extractor=data.get("extractor", "dake"),
-            extractor_version=data.get("extractor_version", "1.0"),
+            extractor_version=data.get("extractor_version", "2.0"),
             scorer=data.get("scorer", "frame_difference"),
             frame_reader=data.get("frame_reader", "ffmpeg"),
             min_temporal_distance=int(data.get("min_temporal_distance", 30)),
@@ -334,6 +350,8 @@ class ExtractionConfig:
             sampling_ratio=data.get("sampling_ratio"),
             max_side=int(data.get("max_side", 64)),
             fps=data.get("fps"),
+            jpeg_quality=int(data.get("jpeg_quality", 70)),
+            anchor_interval_seconds=data.get("anchor_interval_seconds"),
         )
 
     def config_hash(self) -> str:
@@ -699,7 +717,7 @@ def _build_extractor(
 ) -> DakeKeyframeExtractor:
     """Create the extractor for one video from the effective configuration."""
     frame_reader = create_frame_reader(config.frame_reader, max_side=config.max_side, fps=config.fps)
-    scorer = create_scorer(config.scorer)
+    scorer = create_scorer(config.scorer, quality=config.jpeg_quality)
     return DakeKeyframeExtractor(
         video_id,
         frame_reader,
@@ -708,6 +726,7 @@ def _build_extractor(
         peak_threshold=config.peak_threshold,
         target=config.target_keyframes_per_video,
         sampling_ratio=config.sampling_ratio,
+        anchor_interval_seconds=config.anchor_interval_seconds,
     )
 
 

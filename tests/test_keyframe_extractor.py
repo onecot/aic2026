@@ -16,11 +16,13 @@ from aic2026.keyframe_extractor import (
     DakeKeyframeExtractor,
     FFmpegFrameReader,
     FrameDifferenceScorer,
+    JPEGSizeChangeScorer,
     Keyframe,
     KeyframeExtractionError,
     SyntheticFrameReader,
     VideoFrame,
     candidate_peaks,
+    compute_anchor_frames,
     create_frame_reader,
     create_scorer,
     extract_video_keyframes,
@@ -203,6 +205,70 @@ class TestFrameDifferenceScorer:
         assert FrameDifferenceScorer().name == "frame_difference"
 
 
+def _frame(index: int, image: np.ndarray) -> VideoFrame:
+    """A VideoFrame carrying a concrete grayscale image."""
+    return VideoFrame(frame_index=index, pts_time=index / 25.0, fps=25.0, image=image)
+
+
+def _flat_image(shape: tuple[int, int] = (64, 64)) -> np.ndarray:
+    return np.full(shape, 40.0, dtype=np.float32)
+
+
+def _noisy_image(shape: tuple[int, int] = (64, 64), seed: int = 0) -> np.ndarray:
+    return np.random.default_rng(seed).integers(0, 256, size=shape).astype(np.float32)
+
+
+class TestJPEGSizeChangeScorer:
+    def test_name(self) -> None:
+        assert JPEGSizeChangeScorer().name == "jpeg_size"
+
+    def test_first_frame_scores_zero(self) -> None:
+        frames = [_frame(0, _flat_image()), _frame(1, _flat_image())]
+        scores = JPEGSizeChangeScorer().compute(iter(frames))
+        assert scores[0] == 0.0
+
+    def test_deterministic(self) -> None:
+        frames = [_frame(i, _noisy_image(seed=i)) for i in range(10)]
+        a = JPEGSizeChangeScorer(quality=85).compute(iter(frames))
+        b = JPEGSizeChangeScorer(quality=85).compute(iter(frames))
+        assert np.array_equal(a, b)
+
+    def test_different_frame_sizes_produce_different_scores(self) -> None:
+        # A flat frame then a high-detail (noisy) frame: JPEG sizes differ
+        # strongly, so the change score must be nonzero and positive.
+        flat = _flat_image()
+        noisy = _noisy_image(seed=3)
+        frames = [_frame(0, flat), _frame(1, noisy)]
+        scores = JPEGSizeChangeScorer(quality=90).compute(iter(frames))
+        assert scores[0] == 0.0
+        assert scores[1] > 0.0
+
+    def test_constant_frames_score_zero(self) -> None:
+        frames = [_frame(i, _flat_image()) for i in range(5)]
+        scores = JPEGSizeChangeScorer().compute(iter(frames))
+        assert np.all(scores == 0.0)
+
+    def test_missing_image_raises(self) -> None:
+        frames = [
+            VideoFrame(frame_index=0, pts_time=0.0, fps=25.0, image=None),
+            VideoFrame(frame_index=1, pts_time=0.04, fps=25.0, image=None),
+        ]
+        with pytest.raises(KeyframeExtractionError):
+            JPEGSizeChangeScorer().compute(iter(frames))
+
+    def test_invalid_quality_rejected(self) -> None:
+        for bad in (0, 101, -1, 1.5, "70"):
+            with pytest.raises(ValueError):
+                JPEGSizeChangeScorer(quality=bad)
+
+    def test_quality_changes_encoding(self) -> None:
+        image = _noisy_image(seed=11)
+        frames = [_frame(0, image), _frame(1, image)]
+        low = JPEGSizeChangeScorer(quality=20).compute(iter(frames))
+        high = JPEGSizeChangeScorer(quality=95).compute(iter(frames))
+        assert np.all(low == 0.0) and np.all(high == 0.0)  # identical frames -> identical sizes
+
+
 # ------------------------------------------------------------------- selection
 
 
@@ -245,10 +311,10 @@ class TestSelectKeyframes:
     def test_empty_scores(self) -> None:
         assert select_keyframes(np.array([]), min_temporal_distance=5, peak_threshold=0.0) == []
 
-    def test_always_includes_first_frame(self) -> None:
+    def test_always_includes_first_and_last_frames(self) -> None:
         scores = np.zeros(50)
         indices = select_keyframes(scores, min_temporal_distance=5, peak_threshold=0.0)
-        assert indices == [0]
+        assert indices == [0, 49]
 
     def test_target_caps_total(self) -> None:
         # 5 well-separated peaks plus frame 0
@@ -266,6 +332,63 @@ class TestSelectKeyframes:
     def test_invalid_target_rejected(self) -> None:
         with pytest.raises(ValueError):
             select_keyframes(np.zeros(10), min_temporal_distance=1, peak_threshold=0.0, target=0)
+
+    def test_interval_anchors_included(self) -> None:
+        scores = np.zeros(100)
+        indices = select_keyframes(
+            scores,
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            anchor_interval_frames=10,
+        )
+        # first, last, and every 10th frame between them
+        assert indices == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99]
+
+    def test_peaks_stay_clear_of_anchors(self) -> None:
+        scores = np.zeros(30)
+        scores[5] = 100.0
+        indices = select_keyframes(
+            scores,
+            min_temporal_distance=10,
+            peak_threshold=0.0,
+            anchor_interval_frames=10,
+        )
+        # anchors are 0, 10, 20, 29; peak at 5 is within 10 of anchor 0,
+        # so it must be suppressed.
+        assert indices == [0, 10, 20, 29]
+
+    def test_target_counts_anchors(self) -> None:
+        scores = np.zeros(60)
+        indices = select_keyframes(
+            scores,
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=5,
+            anchor_interval_frames=20,
+        )
+        # anchors are 0, 20, 40, 59 (4 anchors); target 5 allows 1 extra peak.
+        assert len(indices) <= 5
+        assert {0, 20, 40, 59}.issubset(indices)
+
+
+class TestComputeAnchorFrames:
+    def test_first_and_last_always(self) -> None:
+        assert compute_anchor_frames(5) == [0, 4]
+        assert compute_anchor_frames(1) == [0]
+
+    def test_empty(self) -> None:
+        assert compute_anchor_frames(0) == []
+
+    def test_interval(self) -> None:
+        assert compute_anchor_frames(30, interval_frames=10) == [0, 10, 20, 29]
+
+    def test_interval_ignores_edges(self) -> None:
+        assert compute_anchor_frames(12, interval_frames=5) == [0, 5, 10, 11]
+
+    def test_invalid_interval_rejected(self) -> None:
+        for bad in (0, -3, 1.5, True):
+            with pytest.raises(ValueError):
+                compute_anchor_frames(10, interval_frames=bad)
 
 
 # ------------------------------------------------------------------ extractor
@@ -326,10 +449,44 @@ class TestDakeKeyframeExtractor:
         with pytest.raises(FileNotFoundError):
             extractor.extract(tmp_path / "missing.json")
 
-    def test_constant_video_keeps_first_frame(self, tmp_path: Path) -> None:
+    def test_constant_video_keeps_first_and_last_frames(self, tmp_path: Path) -> None:
         path = make_video(tmp_path, "v", [42.0] * 60)
         keyframes = DakeKeyframeExtractor("L21_V001", SyntheticFrameReader(), target=5).extract(path)
-        assert [k.frame_index for k in keyframes] == [0]
+        assert [k.frame_index for k in keyframes] == [0, 59]
+
+    def test_anchor_interval_seconds_adds_anchors(self, tmp_path: Path) -> None:
+        # 60 frames at 25 fps; an anchor every 1.0s -> every 25th frame.
+        path = make_video(tmp_path, "v", [42.0] * 60, fps=25.0)
+        keyframes = DakeKeyframeExtractor(
+            "L21_V001",
+            SyntheticFrameReader(),
+            target=30,
+            anchor_interval_seconds=1.0,
+        ).extract(path)
+        assert [k.frame_index for k in keyframes] == [0, 25, 50, 59]
+
+    def test_invalid_anchor_interval_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            DakeKeyframeExtractor(
+                "L21_V001",
+                SyntheticFrameReader(),
+                target=5,
+                anchor_interval_seconds=0.0,
+            )
+
+    def test_jpeg_scorer_end_to_end(self, tmp_path: Path) -> None:
+        path = make_video(tmp_path, "v", _scene_values(60, scene_length=15))
+        keyframes = extract_video_keyframes(
+            "L21_V001",
+            path,
+            frame_reader=SyntheticFrameReader(),
+            scorer=create_scorer("jpeg_size", quality=80),
+            min_temporal_distance=5,
+            peak_threshold=0.0,
+            target=4,
+        )
+        assert len(keyframes) >= 1
+        assert keyframes[0].video_id == "L21_V001"
 
 
 class TestExtractVideoKeyframes:
@@ -364,6 +521,12 @@ class TestFactories:
 
     def test_create_scorer(self) -> None:
         assert isinstance(create_scorer("frame_difference"), FrameDifferenceScorer)
+        assert isinstance(create_scorer("jpeg_size"), JPEGSizeChangeScorer)
+        assert isinstance(create_scorer("jpeg_size", quality=85), JPEGSizeChangeScorer)
+
+    def test_create_scorer_invalid_quality(self) -> None:
+        with pytest.raises(ValueError):
+            create_scorer("jpeg_size", quality=0)
 
     def test_create_scorer_unknown(self) -> None:
         with pytest.raises(ValueError):

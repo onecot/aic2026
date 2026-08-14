@@ -112,6 +112,27 @@ class TestExtractionConfig:
     def test_config_hash_changes_with_target(self) -> None:
         assert _config(target_keyframes_per_video=5).config_hash() != _config().config_hash()
 
+    def test_config_hash_changes_with_scorer_parameters(self) -> None:
+        assert _config(scorer="jpeg_size").config_hash() != _config().config_hash()
+        assert _config(jpeg_quality=85).config_hash() != _config().config_hash()
+        assert _config(anchor_interval_seconds=2.0).config_hash() != _config().config_hash()
+
+    def test_new_scorer_parameters_round_trip(self) -> None:
+        cfg = _config(scorer="jpeg_size", jpeg_quality=80, anchor_interval_seconds=1.5)
+        restored = ExtractionConfig.from_dict(cfg.to_dict())
+        assert restored == cfg
+        assert restored.config_hash() == cfg.config_hash()
+
+    def test_config_validation_of_new_fields(self) -> None:
+        with pytest.raises(ValueError):
+            _config(jpeg_quality=0)
+        with pytest.raises(ValueError):
+            _config(jpeg_quality=101)
+        with pytest.raises(ValueError):
+            _config(anchor_interval_seconds=0.0)
+        with pytest.raises(ValueError):
+            _config(anchor_interval_seconds=-1.0)
+
 
 # ---------------------------------------------------------------- video manifest
 
@@ -270,6 +291,38 @@ class TestExtractKeyframes:
         assert manifest.num_videos == 2
         assert manifest.statistics.total_videos == 2
 
+    def test_jpeg_scorer_and_anchors_pipeline(
+        self, split_videos: tuple[Path, list[Path]], tmp_path: Path
+    ) -> None:
+        _, worker_files = split_videos
+        out = tmp_path / "shard"
+        manifest = extract_keyframes(
+            worker_files[0],
+            out,
+            _config(
+                scorer="jpeg_size",
+                jpeg_quality=85,
+                anchor_interval_seconds=0.2,
+            ),
+        )
+        assert manifest.scorer == "jpeg_size"
+        assert manifest.parameters["jpeg_quality"] == 85
+        assert manifest.parameters["anchor_interval_seconds"] == 0.2
+        assert manifest.extractor_version == "2.0"
+        assert manifest.num_videos == 2
+        rows = [
+            json.loads(line)
+            for line in (out / FRAMES_FILENAME).read_text(encoding="utf-8").splitlines()
+        ]
+        assert rows
+        first_row = rows[0]
+        # schema unchanged: keyframe records use the canonical shape
+        assert set(first_row["keyframe"]) == {"keyframe_ordinal", "video_id"}
+        assert set(first_row) == {"keyframe", "pts_time", "fps", "frame_index"}
+        # anchors guarantee first and last source frames are present
+        assert first_row["keyframe"]["keyframe_ordinal"] == 1
+        assert first_row["keyframe"]["video_id"]["value"] == "L21_V001"
+
     def test_complete_artifact_is_idempotent(
         self, split_videos: tuple[Path, list[Path]], tmp_path: Path
     ) -> None:
@@ -359,6 +412,13 @@ class TestResume:
         out = self._prepare_interrupted(tmp_path, videos_file, ["L21_V001"])
         with pytest.raises(ExtractionError):
             extract_keyframes(videos_file, out, _config(target_keyframes_per_video=9), resume=True)
+
+    def test_scorer_change_on_resume_rejected(self, videos_file: Path, tmp_path: Path) -> None:
+        out = self._prepare_interrupted(tmp_path, videos_file, ["L21_V001"])
+        with pytest.raises(ExtractionError):
+            extract_keyframes(videos_file, out, _config(scorer="jpeg_size"), resume=True)
+        with pytest.raises(ExtractionError):
+            extract_keyframes(videos_file, out, _config(anchor_interval_seconds=0.5), resume=True)
 
     def test_checkpoint_unknown_videos_rejected(
         self, videos_file: Path, tmp_path: Path

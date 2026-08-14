@@ -32,6 +32,7 @@ Design notes:
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import subprocess
@@ -53,7 +54,7 @@ SYNTHETIC_VIDEO_SCHEMA_VERSION = "1.0"
 FRAME_READER_NAMES = ("ffmpeg", "synthetic")
 
 #: Valid scoring method names.
-SCORER_NAMES = ("frame_difference",)
+SCORER_NAMES = ("frame_difference", "jpeg_size")
 
 
 class KeyframeExtractionError(RuntimeError):
@@ -482,6 +483,74 @@ class FrameDifferenceScorer:
         return np.asarray(scores, dtype=np.float64)
 
 
+def _jpeg_size(image: np.ndarray, quality: int) -> int:
+    """Return the in-memory JPEG byte size of a grayscale image.
+
+    Expected input:
+        - image: 2-D float array in ``[0, 255]``.
+        - quality: JPEG quality in ``[1, 100]``.
+
+    Returns:
+        - The JPEG-encoded byte length.
+
+    Raises:
+        - ImportError: if Pillow is unavailable.
+    """
+    try:
+        from PIL import Image
+    except ModuleNotFoundError as exc:  # pragma: no cover - env dependent
+        raise ImportError(
+            "jpeg_size scoring requires Pillow; install pillow"
+        ) from exc
+    array = np.clip(np.asarray(image, dtype=np.float32), 0.0, 255.0).astype(np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray(array, mode="L").save(buffer, format="JPEG", quality=quality)
+    return int(buffer.tell())
+
+
+class JPEGSizeChangeScorer:
+    """DAKE-inspired JPEG-compressed-size change scorer (V2).
+
+    For each frame, the downscaled grayscale image is JPEG-encoded in memory
+    and its compressed size is measured. ``score[i]`` is the relative change
+    in compressed size between frame ``i`` and frame ``i - 1`` (a percentage
+    of the larger size), and ``score[0] == 0``. A large change in compressed
+    size between consecutive frames marks a strong visual change; this is a
+    deterministic, model-free, GPU-free proxy (inspired by DAKE/U-CESE, which
+    use JPEG size as a cheap informativeness signal).
+
+    Determinism: for identical input images and the same Pillow version the
+    encoder output is deterministic, so repeated runs yield identical scores.
+
+    Expected input:
+        - quality: JPEG quality in ``[1, 100]`` used for encoding (default 70).
+    """
+
+    name: str = "jpeg_size"
+
+    def __init__(self, quality: int = 70) -> None:
+        if not isinstance(quality, int) or isinstance(quality, bool) or not 1 <= quality <= 100:
+            raise ValueError(f"quality must be an integer in [1, 100], got {quality!r}")
+        self._quality = quality
+
+    def compute(self, frames: Iterable[VideoFrame]) -> np.ndarray:
+        scores: list[float] = []
+        previous: int | None = None
+        for frame in frames:
+            if frame.image is None:
+                raise KeyframeExtractionError(
+                    f"frame {frame.frame_index} has no image for jpeg_size scoring"
+                )
+            size = _jpeg_size(frame.image, self._quality)
+            if previous is None:
+                scores.append(0.0)
+            else:
+                denom = max(previous, size, 1)
+                scores.append(100.0 * abs(size - previous) / denom)
+            previous = size
+        return np.asarray(scores, dtype=np.float64)
+
+
 # ------------------------------------------------------------ keyframe selection
 
 
@@ -507,28 +576,71 @@ def candidate_peaks(scores: np.ndarray, peak_threshold: float) -> list[int]:
     return peaks
 
 
+def compute_anchor_frames(
+    num_frames: int,
+    interval_frames: int | None = None,
+) -> list[int]:
+    """Compute hybrid temporal anchor frame indices.
+
+    The first and last frames are always anchors. When ``interval_frames``
+    is given (and >= 1), every ``interval_frames``-th frame strictly between
+    the first and last frame is also an anchor.
+
+    Expected input:
+        - num_frames: total number of frames (>= 0).
+        - interval_frames: optional uniform anchor spacing, or ``None`` for
+          no interval anchors.
+
+    Returns:
+        - Sorted anchor indices; ``[0, n-1]`` for ``n >= 1``, ``[]`` for
+          ``n == 0``.
+
+    Raises:
+        - ValueError: on invalid ``num_frames`` or ``interval_frames``.
+    """
+    if num_frames < 0:
+        raise ValueError(f"num_frames must be >= 0, got {num_frames!r}")
+    if interval_frames is not None and (
+        not isinstance(interval_frames, int) or isinstance(interval_frames, bool) or interval_frames < 1
+    ):
+        raise ValueError(f"interval_frames must be a positive integer or None, got {interval_frames!r}")
+    if num_frames == 0:
+        return []
+    anchors = {0, num_frames - 1}
+    if interval_frames is not None:
+        anchors.update(range(interval_frames, num_frames - 1, interval_frames))
+    return sorted(anchors)
+
+
 def temporal_suppression(
     peaks: Sequence[int],
     scores: np.ndarray,
     *,
     min_temporal_distance: int,
     max_keyframes: int | None = None,
+    occupied: Sequence[int] = (),
 ) -> list[int]:
     """Greedily select peaks while enforcing a minimum temporal distance.
 
     Peaks are considered in descending score order (ties broken by ascending
     index). A peak is accepted when it is at least ``min_temporal_distance``
-    frames from every already-accepted index. At most ``max_keyframes``
-    indices are returned (excluding the always-kept frame 0).
+    frames from every already-accepted index and from every ``occupied``
+    index (anchors). At most ``max_keyframes`` indices are returned
+    (excluding anchors).
 
     Expected input:
         - peaks: candidate peak indices.
         - scores: per-frame change scores (for ordering).
         - min_temporal_distance: minimum allowed frame gap.
         - max_keyframes: optional cap on accepted peaks.
+        - occupied: indices that are already selected (e.g. anchors) and that
+          peaks must keep their distance from.
 
     Returns:
         - Accepted peak indices in ascending order.
+
+    Raises:
+        - ValueError: if ``min_temporal_distance`` is invalid.
     """
     if min_temporal_distance < 1:
         raise ValueError("min_temporal_distance must be >= 1")
@@ -538,7 +650,8 @@ def temporal_suppression(
         if max_keyframes is not None and len(accepted) >= max_keyframes:
             break
         if all(abs(index - other) >= min_temporal_distance for other in accepted):
-            accepted.append(index)
+            if all(abs(index - other) >= min_temporal_distance for other in occupied):
+                accepted.append(index)
     return sorted(accepted)
 
 
@@ -548,37 +661,47 @@ def select_keyframes(
     min_temporal_distance: int,
     peak_threshold: float,
     target: int | None = None,
+    anchor_interval_frames: int | None = None,
 ) -> list[int]:
     """Select keyframe indices from per-frame change scores.
 
-    Frame 0 is always kept (every video yields at least one keyframe).
-    Candidate peaks are then suppressed by ``min_temporal_distance``. When
-    ``target`` is given, the best (highest-scoring) peaks up to ``target`` are
-    kept; the result never exceeds ``target`` total keyframes.
+    Anchor frames are always kept: frame 0, the last frame, and (when
+    ``anchor_interval_frames`` is given) every ``anchor_interval_frames``-th
+    frame between them. Candidate peaks are then suppressed by
+    ``min_temporal_distance`` and must also stay ``min_temporal_distance``
+    frames away from anchors. When ``target`` is given, the best
+    (highest-scoring) peaks are kept so the total (anchors + peaks) does not
+    exceed ``target``; if anchors alone reach or exceed ``target``, no peaks
+    are added.
 
     Expected input:
         - scores: per-frame change scores.
         - min_temporal_distance: minimum frame gap between selected keyframes.
         - peak_threshold: minimum score for a candidate peak.
         - target: optional maximum number of keyframes (``None`` = no cap).
+        - anchor_interval_frames: optional uniform anchor spacing
+          (``None`` = first and last frame only).
 
     Returns:
-        - Sorted keyframe frame indices (includes 0).
+        - Sorted keyframe frame indices (anchors included).
+
+    Raises:
+        - ValueError: if ``target`` is invalid.
     """
     if target is not None and (not isinstance(target, int) or isinstance(target, bool) or target < 1):
         raise ValueError(f"target must be a positive integer or None, got {target!r}")
     if not len(scores):
         return []
-    selected = [0]
-    max_peaks = None if target is None else max(0, target - 1)
+    anchors = compute_anchor_frames(len(scores), anchor_interval_frames)
+    max_peaks = None if target is None else max(0, target - len(anchors))
     accepted = temporal_suppression(
         candidate_peaks(scores, peak_threshold),
         scores,
         min_temporal_distance=min_temporal_distance,
         max_keyframes=max_peaks,
+        occupied=anchors,
     )
-    selected.extend(accepted)
-    return sorted(selected)
+    return sorted(set(anchors) | set(accepted))
 
 
 # ------------------------------------------------------------- extractor
@@ -607,15 +730,18 @@ class KeyframeExtractor(Protocol):
 
 
 class DakeKeyframeExtractor:
-    """V1 DAKE-inspired keyframe extractor.
+    """V2 DAKE-inspired keyframe extractor.
 
     Expected input:
         - video_id: the ``L*_V*`` video id stamped on every :class:`Keyframe`.
         - frame_reader: a :class:`FrameReader` producing decoded frames.
-        - scorer: a :class:`ChangeScorer` (default frame-difference).
+        - scorer: a :class:`ChangeScorer` (default frame-difference; the
+          ``jpeg_size`` scorer is the DAKE-style JPEG-size-change scorer).
         - min_temporal_distance: minimum frame gap between keyframes.
         - peak_threshold: minimum score for a candidate peak.
         - target: optional maximum keyframes per video (``None`` = no cap).
+        - anchor_interval_seconds: optional uniform anchor spacing in seconds
+          (first and last frames are always anchors).
 
     Returns:
         - An extractor instance.
@@ -625,7 +751,7 @@ class DakeKeyframeExtractor:
     """
 
     extractor_name: str = "dake"
-    extractor_version: str = "1.0"
+    extractor_version: str = "2.0"
 
     def __init__(
         self,
@@ -637,6 +763,7 @@ class DakeKeyframeExtractor:
         peak_threshold: float = 8.0,
         target: int | None = None,
         sampling_ratio: float | None = None,
+        anchor_interval_seconds: float | None = None,
     ) -> None:
         VideoId(video_id)  # validates the id pattern
         if not isinstance(min_temporal_distance, int) or isinstance(min_temporal_distance, bool) or min_temporal_distance < 1:
@@ -649,6 +776,8 @@ class DakeKeyframeExtractor:
             raise ValueError(f"sampling_ratio must be in (0, 1], got {sampling_ratio!r}")
         if target is not None and sampling_ratio is not None:
             raise ValueError("target and sampling_ratio are mutually exclusive")
+        if anchor_interval_seconds is not None and float(anchor_interval_seconds) <= 0.0:
+            raise ValueError(f"anchor_interval_seconds must be > 0, got {anchor_interval_seconds!r}")
         self._video_id = video_id
         self._frame_reader = frame_reader
         self._scorer = scorer if scorer is not None else FrameDifferenceScorer()
@@ -656,6 +785,9 @@ class DakeKeyframeExtractor:
         self._peak_threshold = float(peak_threshold)
         self._target = target
         self._sampling_ratio = float(sampling_ratio) if sampling_ratio is not None else None
+        self._anchor_interval_seconds = (
+            float(anchor_interval_seconds) if anchor_interval_seconds is not None else None
+        )
         #: Number of source frames scanned by the most recent :meth:`extract`.
         self._last_frames_scanned = 0
 
@@ -691,11 +823,20 @@ class DakeKeyframeExtractor:
         effective_target = self._target
         if effective_target is None and self._sampling_ratio is not None:
             effective_target = max(1, round(len(scores) * self._sampling_ratio))
+        anchor_interval_frames = None
+        if self._anchor_interval_seconds is not None:
+            fps = fps_values[0] if fps_values else None
+            if fps is None or fps <= 0.0:
+                raise KeyframeExtractionError(
+                    "anchor_interval_seconds requires a positive per-frame fps"
+                )
+            anchor_interval_frames = max(1, round(self._anchor_interval_seconds * fps))
         indices = select_keyframes(
             scores,
             min_temporal_distance=self._min_temporal_distance,
             peak_threshold=self._peak_threshold,
             target=effective_target,
+            anchor_interval_frames=anchor_interval_frames,
         )
         keyframes: list[Keyframe] = []
         for ordinal, frame_index in enumerate(indices, start=1):
@@ -757,20 +898,24 @@ def create_frame_reader(
     return FFmpegFrameReader(max_side=max_side, fps=fps)
 
 
-def create_scorer(name: str) -> ChangeScorer:
+def create_scorer(name: str, *, quality: int = 70) -> ChangeScorer:
     """Create a :class:`ChangeScorer` by name.
 
     Expected input:
         - name: a known scorer name.
+        - quality: JPEG quality in ``[1, 100]`` for the ``jpeg_size`` scorer.
 
     Returns:
         - A scorer instance.
 
     Raises:
-        - ValueError: if ``name`` is not a known scorer.
+        - ValueError: if ``name`` is not a known scorer or ``quality`` is
+          invalid.
     """
     if name not in SCORER_NAMES:
         raise ValueError(f"unsupported scorer {name!r}; expected {SCORER_NAMES}")
+    if name == "jpeg_size":
+        return JPEGSizeChangeScorer(quality=quality)
     return FrameDifferenceScorer()
 
 
@@ -784,6 +929,7 @@ def extract_video_keyframes(
     peak_threshold: float = 8.0,
     target: int | None = None,
     sampling_ratio: float | None = None,
+    anchor_interval_seconds: float | None = None,
 ) -> list[Keyframe]:
     """Convenience wrapper: extract keyframes from one video.
 
@@ -792,6 +938,7 @@ def extract_video_keyframes(
         - video_path: path to the video.
         - frame_reader / scorer / selection parameters: see
           :class:`DakeKeyframeExtractor`.
+        - anchor_interval_seconds: optional uniform anchor spacing in seconds.
 
     Returns:
         - Selected :class:`Keyframe` records ordered by frame index.
@@ -808,5 +955,6 @@ def extract_video_keyframes(
         peak_threshold=peak_threshold,
         target=target,
         sampling_ratio=sampling_ratio,
+        anchor_interval_seconds=anchor_interval_seconds,
     )
     return extractor.extract(video_path)

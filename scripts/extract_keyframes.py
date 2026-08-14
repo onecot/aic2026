@@ -70,9 +70,21 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scorer",
-        choices=("frame_difference",),
+        choices=("frame_difference", "jpeg_size"),
         default="frame_difference",
-        help="change-scoring method (default: frame_difference)",
+        help="change-scoring method: frame_difference (mean abs pixel change) or jpeg_size (DAKE-style JPEG-compressed-size change) (default: frame_difference)",
+    )
+    parser.add_argument(
+        "--jpeg-quality",
+        type=int,
+        default=70,
+        help="JPEG quality in [1, 100] used by the jpeg_size scorer (default: 70)",
+    )
+    parser.add_argument(
+        "--anchor-interval-seconds",
+        type=float,
+        default=None,
+        help="add a uniform keyframe anchor every N seconds between the always-kept first and last frames (default: none)",
     )
     parser.add_argument(
         "--min-temporal-distance",
@@ -151,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         sampling_ratio=args.sampling_ratio,
         max_side=args.max_side,
         fps=args.fps,
+        jpeg_quality=args.jpeg_quality,
+        anchor_interval_seconds=args.anchor_interval_seconds,
     )
     reporter = create_progress_reporter(args.progress, unit="videos")
     reporter.begin()

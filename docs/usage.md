@@ -1531,11 +1531,12 @@ a tiny subset without running the full 873-video set.
 
 The BTC-provided keyframes are a closed data source. To make the pipeline
 self-sufficient, this repository ships a lightweight, DAKE-inspired extractor
-(V1, independently implemented) that derives the canonical keyframe artifact
-from raw video files, producing the same `frames.ndjson` records and
-`map-keyframes/<VIDEO_ID>.csv` files the embedding/retrieval pipeline already
-consumes. It is a drop-in replacement for the BTC keyframe source: no
-retrieval, scoring, evaluation, index, or embedding code needs to change.
+(derived from our own implementation, now at V2) that derives the canonical
+keyframe artifact from raw video files, producing the same `frames.ndjson`
+records and `map-keyframes/<VIDEO_ID>.csv` files the embedding/retrieval
+pipeline already consumes. It is a drop-in replacement for the BTC keyframe
+source: no retrieval, scoring, evaluation, index, or embedding code needs to
+change.
 
 ```text
 1. split    scripts/split_keyframe_extraction_shards.py   (once, any machine)
@@ -1593,12 +1594,31 @@ Use `--sampling-ratio 0.02` instead of `--target-keyframes-per-video` to
 select a fixed fraction of each video's frames (exactly one of the two is
 required). `--frame-reader` selects the frame source: `ffmpeg` (real videos,
 decoded to downscaled grayscale) or `synthetic` (deterministic JSON test
-descriptors). `--scorer` selects the change-scoring method (V1:
-`frame_difference`, a cheap mean-absolute-difference over downscaled
-grayscale frames). `--min-temporal-distance` (default 30) and
-`--peak-threshold` (default 8.0) control selection: candidate peaks are
-local maxima above the threshold, and selected keyframes are never closer
-than the minimum temporal distance. Frame 0 of every video is always kept.
+descriptors). `--scorer` selects the change-scoring method:
+
+- `frame_difference` (V1): cheap mean-absolute-difference over downscaled
+  grayscale frames.
+- `jpeg_size` (V2): DAKE-inspired JPEG-compressed-size change. Each frame's
+  downscaled grayscale image is JPEG-encoded in memory and the score is the
+  relative change in compressed size between consecutive frames (a percentage
+  of the larger size). `--jpeg-quality` (default 70, range 1-100) controls the
+  encoding. Deterministic, model-free, and GPU-free.
+
+`--min-temporal-distance` (default 30) and `--peak-threshold` (default 8.0)
+control selection: candidate peaks are local maxima above the threshold, and
+selected keyframes are never closer than the minimum temporal distance.
+
+### Hybrid temporal anchors (V2)
+
+The first and last frames of every video are always kept as anchors. With
+`--anchor-interval-seconds`, additional uniform anchors are added every N
+seconds (rounded to whole frames using the video fps) between them. Candidate
+peaks must also stay at least `--min-temporal-distance` frames away from
+anchors, and when `--target-keyframes-per-video` or `--sampling-ratio` is
+given the total (anchors + peaks) does not exceed the target (anchors alone
+are always kept even if they reach the target). This guarantees content
+coverage across long videos without suppressing peaks inside uniform
+segments.
 
 The pipeline (`aic2026.keyframe_extraction.extract_keyframes`) writes:
 
@@ -1655,7 +1675,9 @@ protocol (how change is measured) are pluggable, and selection is pure and
 deterministic. A stronger scorer (e.g. perceptual or model-based) can be added
 without touching the pipeline, split, merge, or downstream stages. When you do,
 bump `extractor_version` so `config_hash` changes and old artifacts are not
-confused with new ones.
+confused with new ones. The `jpeg_size` scorer and `anchor_interval_seconds`
+option are V2 additions; `config_hash` covers both, so a resume with a
+different scorer, `jpeg_quality`, or anchor interval is rejected.
 
 ## 20. Experiment tracking
 
