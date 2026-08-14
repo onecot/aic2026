@@ -975,10 +975,11 @@ scripts/deduplicate_keyframes.py - deduplicate keyframes before split/embed (Sec
 scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section 16).
 scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
 scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
-scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 19).
-scripts/extract_keyframes.py - resumable DAKE-inspired keyframe extraction (Section 19).
-scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 19).
-scripts/create_experiment_manifest.py - record experiment metadata (Section 20).
+scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 20).
+scripts/extract_keyframes.py - resumable DAKE-inspired keyframe extraction (Section 20).
+scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 20).
+scripts/build_video_manifest.py - build the canonical videos.json inventory (Section 19).
+scripts/create_experiment_manifest.py - record experiment metadata (Section 21).
 ```
 
 ## 14. Object-based reranking of KIS predictions
@@ -1527,7 +1528,68 @@ python scripts/merge_embedding_shards.py \
 This exercises input discovery, splitting, embedding, and merging end to end on
 a tiny subset without running the full 873-video set.
 
-## 19. DAKE-inspired keyframe extraction
+## 19. Video source manifest
+
+The keyframe-extraction workflow starts from a canonical video inventory: a
+single `videos.json` listing every `.mp4` under a raw video directory, with
+per-video metadata used by the splitter for balanced assignment. The builder
+(`scripts/build_video_manifest.py`, core logic in
+`aic2026.video_manifest`) is deterministic and independent of the extractor:
+
+```text
+videos/
+    L21_V001.mp4
+    L21_V002.mp4
+    ...
+```
+
+becomes:
+
+```bash
+python scripts/build_video_manifest.py \
+  --video-dir data/raw/videos \
+  --output data/interim/videos/videos.json
+```
+
+```json
+{
+  "schema_version": "1.0",
+  "source_dir": ".../data/raw/videos",
+  "created_at": "2026-08-14T20:14:20+00:00",
+  "videos": [
+    {
+      "video_id": "L21_V001",
+      "path": ".../data/raw/videos/L21_V001.mp4",
+      "file_size_bytes": 15402,
+      "duration_seconds": 2.0,
+      "fps": 25.0,
+      "num_frames": 50
+    }
+  ]
+}
+```
+
+Each `video_id` is the filename stem, only `.mp4` files are accepted (other
+extensions are ignored), entries are ordered deterministically by `video_id`,
+and duplicate ids or empty (zero-byte) files are rejected. When metadata
+probing is enabled (default), `ffprobe` supplies `fps`, `duration_seconds`,
+and `num_frames` (falling back to `round(duration * fps)` when `nb_frames` is
+absent); a probing failure aborts the build rather than producing an invalid
+manifest. `--no-metadata` skips probing, leaving those fields `null`. The
+manifest is written atomically (same-directory temp file + rename).
+
+Schema compatibility: the serialized format is additive over the existing
+`aic2026.keyframe_extraction` video-manifest schema (`schema_version` stays
+`1.0`; the extra keys are ignored by existing consumers), so the generated
+file is consumed unchanged by:
+
+```text
+video split (Section 20)
+  -> keyframe extraction (Section 20)
+  -> embedding (Section 16)
+```
+
+## 20. DAKE-inspired keyframe extraction
 
 The BTC-provided keyframes are a closed data source. To make the pipeline
 self-sufficient, this repository ships a lightweight, DAKE-inspired extractor
@@ -1679,7 +1741,7 @@ confused with new ones. The `jpeg_size` scorer and `anchor_interval_seconds`
 option are V2 additions; `config_hash` covers both, so a resume with a
 different scorer, `jpeg_quality`, or anchor interval is rejected.
 
-## 20. Experiment tracking
+## 21. Experiment tracking
 
 Now that experiments flow through split -> embed -> merge -> index -> evaluate,
 distinct model runs (OpenCLIP, Jina, SigLIP, MobileCLIP, ...) must not be
