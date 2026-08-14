@@ -348,3 +348,53 @@ from `0.108911` at baseline down to `0.079208` at `lambda_weight=0.01` and
   signal for KIS than this naive temporal consistency heuristic.
 - This records one specific temporal bonus reranking strategy; it does not
   claim temporal methods in general are ineffective.
+
+---
+
+## Video-level Reranking Experiments
+
+Post-processing study on the same retrieval pipeline as the temporal
+experiments, testing whether reranking the raw retrieval predictions at the
+video level improves KIS scoring.
+
+**Context**
+- **Backbone:** OpenCLIP `ViT-L-14`
+- **Checkpoint:** `laion2b_s32b_b82k`
+- **Query field:** `query_text_en`
+- **Prediction artifact:** `kis-l14-laion2b-full-en-top1000.json`
+- **Evaluation:** KIS scoring (`evaluate_kis`, cutoffs R@1/R@5/R@20/R@50/R@100;
+  Final = mean of the five R@k values) on the shared eval set
+  (`data/eval/eval_set.csv`, 101 queries)
+- **Baseline Final: 0.344554** (untouched retrieval, `top_k=1000`)
+
+**Pipeline:** `predict-kis` (retrieval, `top_k=1000`) → video-level reranking
+(`aic2026.video_reranking`) → `evaluate_kis`. The reranking groups each query's
+predictions by `video_id`, computes a per-video score from its frame candidates
+(`"max"` of the frame scores, or the mean of the top `top_n` frame scores),
+ranks videos by video score, and reconstructs the frame ranking as videos
+ordered by video score with each video's frames ordered by original CLIP score.
+
+| Config | R@1 | R@5 | R@20 | R@50 | R@100 | Final |
+|--------|---------|---------|---------|---------|---------|---------|
+| Baseline (no reranking, `top_k=1000`) | 0.108911 | 0.257426 | 0.366337 | 0.455446 | 0.534653 | **0.344554** |
+| `max`, `top_n=5` | 0.108911 | 0.188119 | 0.277228 | 0.435644 | 0.475248 | **0.297030** |
+| `max`, `top_n=10` | 0.108911 | 0.188119 | 0.277228 | 0.435644 | 0.475248 | **0.297030** |
+| `mean_top_n`, `top_n=3` | 0.099010 | 0.188119 | 0.277228 | 0.386139 | 0.455446 | **0.281188** |
+| `mean_top_n`, `top_n=10` | 0.089109 | 0.178218 | 0.227723 | 0.346535 | 0.445545 | **0.257426** |
+
+The `max` aggregation with `top_n=5` and `top_n=10` produced identical results
+(`top_n` only affects the `mean_top_n` aggregation). All video-level settings
+degraded Final relative to the baseline; `mean_top_n` degraded further as
+`top_n` grew.
+
+### Conclusion
+
+- Video-level aggregation reduced KIS performance on this evaluation set
+  relative to the untouched baseline.
+- Grouping frames by video loses temporal localization precision, which is
+  exactly what KIS scoring rewards.
+- Frame-level CLIP ranking remains the strongest signal among the post-
+  processing strategies recorded so far.
+- Do not use this naive video reranking for KIS.
+- This records one specific video-level reranking approach; it does not claim
+  video reranking methods in general are ineffective.
