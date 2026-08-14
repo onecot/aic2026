@@ -226,3 +226,51 @@ PY
 - `ViT-B-32` (512-dim) and `ViT-L-14` (768-dim) results are from separate
   pipelines in distinct embedding spaces and are compared only via their
   scores on the shared evaluation set.
+
+---
+
+## Temporal Aggregation Experiments
+
+Post-processing study on top of the strongest recorded retrieval pipeline:
+whether re-ranking the raw retrieval predictions with temporal aggregation
+improves KIS scoring.
+
+**Context**
+- **Backbone:** OpenCLIP `ViT-L-14`
+- **Checkpoint:** `laion2b_s32b_b82k`
+- **Query field:** `query_text_en`
+- **Index:** `data/interim/indexes/openclip-l14-laion2b-full`
+- **Evaluation:** KIS scoring (`evaluate_kis`, cutoffs R@1/R@5/R@20/R@50/R@100;
+  Final = mean of the five R@k values) on the shared eval set
+  (`data/eval/eval_set.csv`, 101 queries)
+
+**Pipeline:** `predict-kis` (retrieval, `top_k=1000`) → sliding-window mean
+aggregation (`aic2026.temporal_aggregation`) → `evaluate_kis`. The aggregation
+groups each query's predictions by `video_id`, sorts frames by `frame_index`,
+and replaces every prediction's score with the mean score over frames within
+`window_size` frames on each side **of the same video**, then re-ranks by the
+aggregated score.
+
+| Config | R@1 | R@5 | R@20 | R@50 | R@100 | Final |
+|--------|---------|---------|---------|---------|---------|---------|
+| Baseline (`top_k=1000`, no aggregation) | 0.108911 | 0.257426 | 0.366337 | 0.455446 | 0.534653 | **0.344554** |
+| Mean, `window_size=3` | 0.108911 | 0.257426 | 0.366337 | 0.435644 | 0.524752 | **0.338614** |
+| Mean, `window_size=5` | 0.108911 | 0.257426 | 0.356436 | 0.425743 | 0.524752 | **0.334653** |
+| Mean, `window_size=10` | 0.108911 | 0.257426 | 0.356436 | 0.425743 | 0.514851 | **0.332673** |
+
+The baseline matches Experiment 3 (same model, checkpoint, and evaluation set);
+it is recorded here with `top_k=1000` as the untouched retrieval output that the
+aggregation stage consumes. R@1 and R@5 are unchanged across all temporal
+configs, and every degradation appears at R@20 and above.
+
+### Conclusion
+
+- Naive sliding-window mean aggregation reduced KIS performance on this
+  evaluation set relative to the untouched baseline.
+- Larger windows caused larger degradation (Final fell monotonically as
+  `window_size` increased from 3 to 10).
+- Temporal smoothing may over-reward dense but incorrect frame clusters and
+  hurt precise frame localization, which is what KIS scoring rewards.
+- Keep the baseline retrieval output unchanged.
+- This records one specific aggregation method; it does not claim temporal
+  methods are ineffective in general.
