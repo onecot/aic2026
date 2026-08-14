@@ -398,3 +398,64 @@ degraded Final relative to the baseline; `mean_top_n` degraded further as
 - Do not use this naive video reranking for KIS.
 - This records one specific video-level reranking approach; it does not claim
   video reranking methods in general are ineffective.
+
+---
+
+## KIS Error Analysis
+
+Read-only categorization of the baseline retrieval results to understand where
+and why KIS retrieval fails, using `scripts/analyze_kis_errors.py`.
+
+### Setup
+
+- **Baseline analyzed:** OpenCLIP `ViT-L-14` / `laion2b_s32b_b82k`
+- **Prediction artifact:** `kis-l14-laion2b-full-en`
+- **Evaluation:** 101 KIS queries (`data/eval/eval_set.csv`), top-100/top-k
+  analysis of each query's ranked predictions
+- **Categories:** `HIT` = correct video with a frame inside the inclusive
+  ground-truth range; `NEAR_VIDEO` = correct video but no in-range frame;
+  `FAIL` = correct video absent from the top-k predictions
+
+### Results
+
+Category breakdown:
+
+| Category | Count | Share |
+|----------|-------|-------|
+| HIT | 54 / 101 | 53.5% |
+| NEAR_VIDEO | 36 / 101 | 35.6% |
+| FAIL | 11 / 101 | 10.9% |
+
+Video retrieval:
+
+- Ground-truth video appears in top-100: 89.1%
+- Average first ground-truth video rank: 17.98
+
+So the correct video is retrieved for the large majority of queries; failure
+at the video level is rare.
+
+### Temporal observations
+
+- Many `NEAR_VIDEO` cases are very close to the ground-truth frame boundaries:
+  - distances as small as 4 frames
+  - common distances in the 22–40 frame range
+- Some cases show large temporal offsets, where CLIP retrieves the correct
+  semantic video but the wrong moment in it.
+
+These point to a frame-selection rather than a video-selection problem.
+
+### Failure observations
+
+Some `FAIL` cases reflect fine-grained visual/text confusion:
+
+- similar food preparation scenes
+- educational / slides / lecture videos
+- text-heavy or OCR-dependent queries
+
+### Conclusion
+
+- The main bottleneck is not video-level retrieval.
+- The current CLIP backbone already retrieves the correct video for most
+  queries.
+- Future improvements should focus on temporal localization and frame
+  candidate expansion rather than only changing the backbone.
