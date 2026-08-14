@@ -975,7 +975,10 @@ scripts/deduplicate_keyframes.py - deduplicate keyframes before split/embed (Sec
 scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section 16).
 scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
 scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
-scripts/create_experiment_manifest.py - record experiment metadata (Section 19).
+scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 19).
+scripts/extract_keyframes.py - resumable DAKE-inspired keyframe extraction (Section 19).
+scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 19).
+scripts/create_experiment_manifest.py - record experiment metadata (Section 20).
 ```
 
 ## 14. Object-based reranking of KIS predictions
@@ -1524,7 +1527,137 @@ python scripts/merge_embedding_shards.py \
 This exercises input discovery, splitting, embedding, and merging end to end on
 a tiny subset without running the full 873-video set.
 
-## 19. Experiment tracking
+## 19. DAKE-inspired keyframe extraction
+
+The BTC-provided keyframes are a closed data source. To make the pipeline
+self-sufficient, this repository ships a lightweight, DAKE-inspired extractor
+(V1, independently implemented) that derives the canonical keyframe artifact
+from raw video files, producing the same `frames.ndjson` records and
+`map-keyframes/<VIDEO_ID>.csv` files the embedding/retrieval pipeline already
+consumes. It is a drop-in replacement for the BTC keyframe source: no
+retrieval, scoring, evaluation, index, or embedding code needs to change.
+
+```text
+1. split    scripts/split_keyframe_extraction_shards.py   (once, any machine)
+2. extract  scripts/extract_keyframes.py                  (one worker/machine)
+3. merge    scripts/merge_keyframe_shards.py              (once, any machine)
+4. embed    scripts/embed_shard.py                        (unchanged, Section 16)
+```
+
+### Input: video manifest (`videos.json`)
+
+Extraction consumes a video manifest listing `video_id` + `path` entries
+(`VideoManifest` in `aic2026.keyframe_extraction`, schema version 1.0).
+`num_frames` is an optional weight used only by the splitter for balancing:
+
+```json
+{
+  "schema_version": "1.0",
+  "videos": [
+    {"video_id": "L21_V001", "path": "/data/videos/L21_V001.mp4", "num_frames": 11482},
+    {"video_id": "L21_V002", "path": "/data/videos/L21_V002.mp4"}
+  ]
+}
+```
+
+### Step 1: split (deterministic and balanced)
+
+```bash
+python scripts/split_keyframe_extraction_shards.py \
+  --videos data/interim/videos/videos.json \
+  --num-workers 5 \
+  --output-dir data/keyframe-splits/
+```
+
+Produces `split_manifest.json` and one `worker_<id>/videos.json` per worker.
+Each video is kept intact and assigned whole to the least-loaded worker
+(greedy longest-processing-time by `num_frames`, falling back to weight 1 when
+absent). The split is deterministic (same input + same `--num-workers` =>
+identical splits) and never duplicates or drops videos. Re-running into an
+existing split fails unless `--overwrite` is given.
+
+### Step 2: extract (resumable)
+
+Each worker runs the extractor over its manifest:
+
+```bash
+python scripts/extract_keyframes.py \
+  --videos data/keyframe-splits/worker_000/videos.json \
+  --output-dir data/keyframes/shard_000 \
+  --target-keyframes-per-video 60 \
+  --frame-reader ffmpeg \
+  --progress auto
+```
+
+Use `--sampling-ratio 0.02` instead of `--target-keyframes-per-video` to
+select a fixed fraction of each video's frames (exactly one of the two is
+required). `--frame-reader` selects the frame source: `ffmpeg` (real videos,
+decoded to downscaled grayscale) or `synthetic` (deterministic JSON test
+descriptors). `--scorer` selects the change-scoring method (V1:
+`frame_difference`, a cheap mean-absolute-difference over downscaled
+grayscale frames). `--min-temporal-distance` (default 30) and
+`--peak-threshold` (default 8.0) control selection: candidate peaks are
+local maxima above the threshold, and selected keyframes are never closer
+than the minimum temporal distance. Frame 0 of every video is always kept.
+
+The pipeline (`aic2026.keyframe_extraction.extract_keyframes`) writes:
+
+```text
+data/keyframes/shard_000/
+    frames.ndjson             canonical KeyframeTiming records
+    map-keyframes/L21_V001.csv   n,pts_time,fps,frame_idx  (one per video)
+    ...
+    manifest.json             versioned extraction metadata
+    checkpoint.json           resume state (present during processing)
+```
+
+Guarantees:
+
+- **Resumable**: `checkpoint.json` records completed videos; an interrupted
+  run skips them on resume. A resume with a different configuration is
+  rejected (`config_hash`, sha256 of the canonicalized config, must match) so
+  artifacts are never mixed.
+- **Atomic**: per-video outputs are staged (`.staging/`) and the final
+  `frames.ndjson`, `map-keyframes/*.csv`, and `manifest.json` are swapped
+  into place only after all videos complete. A crash never leaves a partial
+  artifact that looks valid.
+- **Validated**: the finished artifact is re-read and checked for duplicate
+  `(video_id, frame_index)` keys and complete per-video coverage before it is
+  marked done.
+- **Deterministic**: same manifest + same config => identical records.
+- **Canonical**: `frames.ndjson` lines match `KeyframeTiming.to_dict()` and
+  the CSV files match the `parse_keyframe_map` column contract, so the output
+  feeds the unchanged split -> embed -> merge -> index workflow (Section 18).
+
+`manifest.json` records the extractor/scorer/frame reader, the effective
+parameters, `config_hash`, `source_videos`, counts, and aggregate statistics
+(frames scanned, keyframes per video), so every artifact is self-describing.
+
+### Step 3: merge
+
+```bash
+python scripts/merge_keyframe_shards.py \
+  --shards data/keyframes/shard_000 data/keyframes/shard_001 ... \
+  --output-dir data/keyframes/merged
+```
+
+Merge (`aic2026.keyframe_extraction_merge.merge_shards`) validates that all
+shards share the same extractor, scorer, frame reader, and configuration,
+rejects any keyframe or video appearing in more than one shard, and rebuilds
+`map-keyframes/*.csv` deterministically from the merged records so the maps
+are always consistent with `frames.ndjson`.
+
+### Extensibility
+
+The extractor is deliberately modular (`aic2026.keyframe_extractor`): the
+`FrameReader` protocol (how frames are decoded) and the `ChangeScorer`
+protocol (how change is measured) are pluggable, and selection is pure and
+deterministic. A stronger scorer (e.g. perceptual or model-based) can be added
+without touching the pipeline, split, merge, or downstream stages. When you do,
+bump `extractor_version` so `config_hash` changes and old artifacts are not
+confused with new ones.
+
+## 20. Experiment tracking
 
 Now that experiments flow through split -> embed -> merge -> index -> evaluate,
 distinct model runs (OpenCLIP, Jina, SigLIP, MobileCLIP, ...) must not be

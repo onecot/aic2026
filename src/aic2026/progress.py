@@ -97,21 +97,23 @@ def format_progress_line(
     *,
     bar: bool = True,
     note: str | None = None,
+    unit: str = "frames",
 ) -> str:
     """Format a single-line progress report.
 
     Expected input:
-        - completed: number of processed frames.
-        - total: total number of frames.
+        - completed: number of processed units.
+        - total: total number of units.
         - elapsed: wall-clock seconds elapsed.
         - bar: include an ASCII progress bar (interactive mode).
         - note: optional context suffix (e.g. current video).
+        - unit: unit label (``frames``, ``videos``, ...) for the report.
 
     Returns:
         - A single line such as::
 
             [=======>........] 42.5% | 75200/177321 frames  \
-elapsed=01:35:20 speed=13.1 frames/s ETA=02:12:40
+            elapsed=01:35:20 speed=13.1 frames/s ETA=02:12:40
 
     """
     percent = 100.0 * completed / total if total > 0 else 100.0
@@ -122,9 +124,9 @@ elapsed=01:35:20 speed=13.1 frames/s ETA=02:12:40
     speed = compute_speed(completed, elapsed)
     eta = estimate_eta(completed, total, elapsed)
     line = (
-        f"{prefix}{percent:5.1f}% | {completed}/{total} frames  "
+        f"{prefix}{percent:5.1f}% | {completed}/{total} {unit}  "
         f"elapsed={format_duration(elapsed)} "
-        f"speed={speed:.1f} frames/s "
+        f"speed={speed:.1f} {unit}/s "
         f"ETA={format_duration(eta)}"
     )
     if note:
@@ -201,16 +203,20 @@ class ProgressReporter:
         interval_seconds: float = 2.0,
         stream: TextIO | None = None,
         logger_name: str = "aic2026.progress",
+        unit: str = "frames",
     ) -> None:
         if mode not in ("interactive", "periodic", "off"):
             raise ValueError(
                 f"unsupported reporter mode {mode!r}; "
                 "expected interactive, periodic, or off"
             )
+        if not isinstance(unit, str) or unit == "":
+            raise ValueError("unit must be a non-empty string")
         self._mode = mode
         self._interval = max(0.0, float(interval_seconds))
         self._stream: TextIO = stream if stream is not None else sys.stdout
         self._logger = logging.getLogger(logger_name)
+        self._unit = unit
         self._started = False
         self._begin_time = 0.0
         self._last_report: float | None = None
@@ -275,6 +281,7 @@ class ProgressReporter:
             self._elapsed(),
             bar=self._mode == "interactive",
             note=note,
+            unit=self._unit,
         )
         if self._mode == "interactive":
             print("\r" + line, file=self._stream, end="", flush=True)
