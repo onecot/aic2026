@@ -9,6 +9,7 @@ Commands:
     media-info-evaluate - measure video-level retrieval of media-info text.
     media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
     objects-analyze - analyze BTC object detections for KIS retrieval usefulness.
+    object-rerank-kis - rerank a KIS prediction artifact with object detections.
 
 CLI logic stays thin; the real work lives in reusable modules
 (``aic2026.inspection``, ``aic2026.config``, ``aic2026.kis_prediction_runner``,
@@ -44,6 +45,11 @@ from aic2026.media_info_retrieval import (
 from aic2026.model_backends.openclip import OpenClipEncoder
 from aic2026.object_analysis import format_report as format_object_report
 from aic2026.object_analysis import run_object_analysis
+from aic2026.object_reranking import (
+    FrameObjectSource,
+    ObjectRerankingConfig,
+    write_reranked_prediction_artifact,
+)
 from aic2026.temporal_window_expansion import (
     TemporalWindowConfig,
     write_expanded_prediction_artifact,
@@ -212,6 +218,77 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional stable run id recorded in the output artifact.",
     )
     expand_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    rerank_parser = subparsers.add_parser(
+        "object-rerank-kis",
+        help=(
+            "Rerank a KIS prediction artifact by combining CLIP scores with an "
+            "object-score bonus from BTC object detections."
+        ),
+    )
+    rerank_parser.add_argument(
+        "--prediction",
+        type=Path,
+        required=True,
+        help="Path to the source KIS prediction artifact JSON.",
+    )
+    rerank_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path for the output re-ranked prediction artifact JSON.",
+    )
+    rerank_parser.add_argument(
+        "--objects-dir",
+        type=Path,
+        default=None,
+        help="Path to the raw objects collection (defaults to config raw_dir/objects).",
+    )
+    rerank_parser.add_argument(
+        "--map-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the raw map-keyframes collection (defaults to the sibling "
+            "map-keyframes directory of --objects-dir)."
+        ),
+    )
+    rerank_parser.add_argument(
+        "--lambda",
+        dest="lambda_weight",
+        type=float,
+        default=1.0,
+        help="Weight of the object score in the combined score (default: 1.0).",
+    )
+    rerank_parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.3,
+        help="Minimum object detection score to count (default: 0.3).",
+    )
+    rerank_parser.add_argument(
+        "--normalization-method",
+        choices=("none", "lower", "stem"),
+        default="lower",
+        help="Query/entity token normalization (default: lower).",
+    )
+    rerank_parser.add_argument(
+        "--object-score-method",
+        choices=("max", "sum"),
+        default="max",
+        help="Object-score aggregation over matched entities (default: max).",
+    )
+    rerank_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional stable run id recorded in the output artifact.",
+    )
+    rerank_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -793,6 +870,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print(f"Expanded prediction artifact: {args.output}")
+        print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
+        print(f"Run id: {artifact.run_id}")
+        return 0
+
+    if args.command == "object-rerank-kis":
+        config = load_config()
+        objects_dir = args.objects_dir or config.data_raw_dir / "objects"
+        map_dir = args.map_dir or (objects_dir.parent / "map-keyframes")
+        try:
+            object_source = FrameObjectSource(objects_dir, map_dir)
+            rerank_config = ObjectRerankingConfig(
+                confidence_threshold=args.confidence_threshold,
+                lambda_weight=args.lambda_weight,
+                normalization_method=args.normalization_method,
+                object_score_method=args.object_score_method,
+            )
+            artifact = write_reranked_prediction_artifact(
+                output_path=args.output,
+                source_path=args.prediction,
+                object_source=object_source,
+                config=rerank_config,
+                run_id=args.run_id,
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Reranked prediction artifact: {args.output}")
         print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
         print(f"Run id: {artifact.run_id}")
         return 0

@@ -401,6 +401,75 @@ degraded Final relative to the baseline; `mean_top_n` degraded further as
 
 ---
 
+## Object-based Reranking Experiments
+
+**Experiment:** Object-based reranking using BTC OWL-ViT detections.
+
+**Motivation:** Evaluate whether BTC OWL-ViT object detections can improve CLIP
+frame ranking on KIS retrieval.
+
+**Context**
+- **Backbone:** OpenCLIP `ViT-L-14`
+- **Checkpoint:** `laion2b_s32b_b82k`
+- **Query field:** `query_text_en`
+- **Prediction artifact:** `kis-l14-laion2b-full-en-top1000.json`
+- **Evaluation:** KIS scoring (`evaluate_kis`, cutoffs R@1/R@5/R@20/R@50/R@100;
+  Final = mean of the five R@k values) on the shared eval set
+  (`data/eval/eval_set.csv`, 101 queries)
+- **Baseline Final: 0.344554** (untouched retrieval, `top_k=1000`)
+
+**Data**
+- 177,321 frames (full keyframe collection)
+- 584 object entities
+- BTC objects directory: `data/raw/aic2026_batch1/objects`
+
+**Method**
+
+Pipeline: `predict-kis` (retrieval, `top_k=1000`) → object-based reranking
+(`aic2026.object_reranking`) → `evaluate_kis`. For every prediction the
+combined score is
+
+```text
+final_score = clip_score + lambda * object_score
+```
+
+The object score is computed per predicted frame:
+- query/object token overlap (query tokens matched against
+  `detection_class_entities`),
+- confidence threshold filtering of detections,
+- `max` or `sum` aggregation of matched-entity confidences.
+
+**Grid**
+
+| `lambda` | `confidence` | aggregation |
+|----------|--------------|-------------|
+| 0.01 | 0.3 | max |
+| 0.03 | 0.5 | sum |
+| 0.05 | 0.7 | |
+| 0.1 | | |
+
+**Best result**
+
+- `lambda`: 0.01
+- `confidence`: 0.7
+- `aggregation`: `max`
+- **Final: 0.346535**
+- R@100: 0.534653
+
+**Baseline**
+
+- L14 LAION CLIP (untouched retrieval, `top_k=1000`)
+- **Final: 0.344554**
+
+**Conclusion**
+
+- Small improvement (+0.2% absolute) over the baseline.
+- Object information does not improve video recall, but provides a minor
+  frame-level reranking benefit.
+- Keep object-based reranking as an optional post-processing layer.
+
+---
+
 ## KIS Error Analysis
 
 Read-only categorization of the baseline retrieval results to understand where

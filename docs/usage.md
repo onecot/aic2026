@@ -43,7 +43,7 @@ Artifact purposes:
 CLI commands exist (`aic2026 inspect`, `aic2026 predict-kis`,
 `aic2026 temporal-expand-kis`, `aic2026 media-info-search`,
 `aic2026 media-info-evaluate`, `aic2026 media-info-report`,
-`aic2026 objects-analyze`). The embedding and
+`aic2026 objects-analyze`, `aic2026 object-rerank-kis`). The embedding and
 index stages are Python-API only and are composed in scripts.
 
 ## 2. Dataset stage
@@ -964,4 +964,145 @@ aic2026 media-info-search - rank videos by BM25 relevance over media-info text.
 aic2026 media-info-evaluate - measure video-level retrieval of media-info text.
 aic2026 media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
 aic2026 objects-analyze  - analyze BTC object detections for KIS retrieval usefulness.
+aic2026 object-rerank-kis - rerank a KIS prediction artifact with object detections.
 ```
+
+## 14. Object-based reranking of KIS predictions
+
+Re-ranks an existing ``predict-kis`` prediction artifact using BTC OWL-ViT
+object detections, testing whether objects can improve CLIP retrieval ranking.
+For each prediction the combined score is
+
+```text
+final_score = clip_score + lambda_weight * object_score
+```
+
+where the object score is derived from the entities detected in the predicted
+frame that match the query. Predictions are re-ranked by ``final_score`` in
+descending order with fresh strictly increasing ranks; ties keep the original
+ranking order (stable sort).
+
+This is a post-processing stage over prediction artifacts only. It does not
+modify retrieval, the scorer, evaluation, the embedding/index pipeline, or the
+prediction-artifact schema. The output is a standard prediction artifact that
+remains loadable by ``read_kis_prediction_artifact`` /
+``load_kis_predictions_for_scoring`` and consumable by ``evaluate_kis``.
+
+Source: `aic2026.object_reranking` (`ObjectRerankingConfig`,
+`FrameObjectSource`, `build_reranked_artifact`,
+`rerank_prediction_artifact`, `write_reranked_prediction_artifact`).
+
+### Matching method
+
+1. The query text is tokenized into word tokens.
+2. Tokens are normalized by `normalization_method`:
+   - `none` — raw tokens (case-sensitive).
+   - `lower` — lowercase only.
+   - `stem` — lowercase plus naive suffix stripping (`ing`/`ed`/`es`/`s`).
+3. The frame-level object representation keeps only detections with
+   `confidence >= confidence_threshold`, merging duplicate entities by maximum
+   confidence.
+4. An entity matches the query when its normalized entity-name tokens overlap
+   the normalized query tokens.
+5. The object score is the maximum (`max`, default) or sum (`sum`) of the
+   confidences of matched entities; `0.0` when nothing matches.
+
+### Input/output schema
+
+- **Input (prediction)**: any `predict-kis` prediction artifact (schema
+  version `1.0`); predictions reference original-video `frame_index` values.
+- **Input (objects)**: `data/raw/aic2026_batch1/objects/<VIDEO_ID>/<NNN>.json`
+  (keyed by keyframe ordinal) plus `map-keyframes/<VIDEO_ID>.csv`, used to
+  resolve each predicted `frame_index` to a keyframe ordinal.
+- **Output**: a new prediction artifact (same schema version `1.0`) with the
+  same top-level metadata (evaluation set, index reference, model metadata,
+  query text field) but updated `score` (combined score) and `rank` per
+  prediction. `run_id` defaults to a deterministic id derived from the source
+  run id and the configuration; `created_at` is the run timestamp.
+
+### Python API
+
+```python
+from aic2026.object_reranking import (
+    FrameObjectSource,
+    ObjectRerankingConfig,
+    build_reranked_artifact,
+    rerank_prediction_artifact,
+    write_reranked_prediction_artifact,
+)
+
+source = FrameObjectSource(
+    objects_dir="data/raw/aic2026_batch1/objects",
+    map_dir="data/raw/aic2026_batch1/map-keyframes",
+)
+config = ObjectRerankingConfig(
+    confidence_threshold=0.3,
+    lambda_weight=1.0,
+    normalization_method="lower",   # "none" | "lower" | "stem"
+    object_score_method="max",      # "max" | "sum"
+)
+
+# From an in-memory artifact or a path; object_source may also be a directory.
+reranked = rerank_prediction_artifact(
+    prediction_artifact="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
+    object_source=source,
+    config=config,
+)
+
+# Persist with the standard atomic artifact writer.
+write_reranked_prediction_artifact(
+    output_path="data/interim/predictions/kis-obj-rerank-l1-c0.3.json",
+    source_path="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
+    object_source=source,
+    config=config,
+    run_id="obj-rerank-1",
+)
+```
+
+`rerank_prediction_artifact` accepts a `KisPredictionArtifact` or a path for
+`prediction_artifact`, and a `FrameObjectSource` or an objects directory for
+`object_source`. It raises `FileNotFoundError` when a collection or artifact
+path is absent and `ValueError` for invalid configuration or payloads.
+
+### CLI
+
+```bash
+aic2026 object-rerank-kis \
+  --prediction data/interim/predictions/kis-l14-laion2b-full-en-top1000.json \
+  --output data/interim/predictions/kis-obj-rerank-l1-c0.3.json \
+  --objects-dir data/raw/aic2026_batch1/objects \
+  --lambda 1.0 \
+  --confidence-threshold 0.3
+```
+
+Available flags: `--prediction` (required), `--output` (required),
+`--objects-dir` (defaults to `config raw_dir/objects`), `--map-dir` (defaults
+to the sibling `map-keyframes` of `--objects-dir`), `--lambda`,
+`--confidence-threshold`, `--normalization-method` (`none`/`lower`/`stem`),
+`--object-score-method` (`max`/`sum`), and `--run-id`.
+
+Expected stdout:
+
+```text
+Reranked prediction artifact: data/interim/predictions/kis-obj-rerank-l1-c0.3.json
+Processed queries: 101/101
+Run id: object-rerank-kis-run-20260814T050833Z-l1-c0.3-nlower-mmax
+```
+
+### Reproduction steps
+
+1. Produce (or reuse) a base prediction artifact:
+   `aic2026 predict-kis ...` (Section 4/5) or use an existing artifact such as
+   `kis-l14-laion2b-full-en-top1000.json`.
+2. Re-run the CLI command above with fixed `--lambda`,
+   `--confidence-threshold`, and normalization/aggregation choices. Record the
+   full command and both artifact paths.
+3. The reranking is deterministic: the same source artifact, object/map
+   collections, and configuration reproduce identical `score`, `rank`, and
+   `run_id` (except `created_at`).
+4. Evaluate the reranked artifact with the standard scorer and compare against
+   the base artifact using the same evaluation procedure.
+
+The full `evaluate_kis` metrics shown in earlier sections are reproduced by
+feeding the reranked artifact to `load_kis_predictions_for_scoring` +
+`evaluate_kis` exactly like any other prediction artifact.
