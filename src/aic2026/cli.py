@@ -3,9 +3,12 @@
 Commands:
     inspect          - inspect the raw dataset and print a concise report.
     predict-kis      - generate ranked KIS predictions from an index artifact.
+    temporal-expand-kis - apply temporal window expansion to a KIS prediction
+                          artifact and save an expanded prediction artifact.
 
 CLI logic stays thin; the real work lives in reusable modules
-(``aic2026.inspection``, ``aic2026.config``, ``aic2026.kis_prediction_runner``).
+(``aic2026.inspection``, ``aic2026.config``, ``aic2026.kis_prediction_runner``,
+``aic2026.temporal_window_expansion``).
 """
 
 import argparse
@@ -17,6 +20,10 @@ from aic2026.config import load_config
 from aic2026.inspection import DatasetReport, inspect_dataset
 from aic2026.kis_prediction_runner import KisPredictionRunnerConfig, run_kis_prediction
 from aic2026.model_backends.openclip import OpenClipEncoder
+from aic2026.temporal_window_expansion import (
+    TemporalWindowConfig,
+    write_expanded_prediction_artifact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +136,58 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     predict_kis_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    expand_parser = subparsers.add_parser(
+        "temporal-expand-kis",
+        help="Apply temporal window expansion to a KIS prediction artifact.",
+    )
+    expand_parser.add_argument(
+        "--prediction",
+        type=Path,
+        required=True,
+        help="Path to the source KIS prediction artifact JSON.",
+    )
+    expand_parser.add_argument(
+        "--index-artifact",
+        type=Path,
+        default=None,
+        help="Path to the index artifact directory (defaults to the artifact's recorded index_artifact_path).",
+    )
+    expand_parser.add_argument(
+        "--window-size",
+        type=int,
+        required=True,
+        help="Maximum absolute frame offset for generated candidates.",
+    )
+    expand_parser.add_argument(
+        "--step",
+        type=int,
+        required=True,
+        help="Spacing between candidate offsets (must be a positive integer).",
+    )
+    expand_parser.add_argument(
+        "--decay",
+        type=float,
+        required=True,
+        help="Score multiplier for propagated candidates, in (0, 1].",
+    )
+    expand_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path for the output expanded prediction artifact JSON.",
+    )
+    expand_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional stable run id recorded in the output artifact.",
+    )
+    expand_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -275,6 +334,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Prediction artifact: {args.output}")
         print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
         print(f"Index artifact id: {artifact.index_manifest['artifact_id']}")
+        return 0
+
+    if args.command == "temporal-expand-kis":
+        try:
+            config = TemporalWindowConfig(
+                window_size=args.window_size,
+                step=args.step,
+                decay=args.decay,
+            )
+            artifact = write_expanded_prediction_artifact(
+                output_path=args.output,
+                source_path=args.prediction,
+                config=config,
+                index_artifact_dir=args.index_artifact,
+                run_id=args.run_id,
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Expanded prediction artifact: {args.output}")
+        print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
+        print(f"Run id: {artifact.run_id}")
         return 0
 
     parser.error(f"unknown command: {args.command}")

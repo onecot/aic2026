@@ -1,0 +1,497 @@
+[
+  {
+    "category": "FAIL",
+    "query_id": "kis_112",
+    "query_text_en": "Find a news video about rising pork prices showing a person wearing white gloves handling raw meat on a cutting board.",
+    "query_text_vi": "T\u00ecm m\u1ed9t video b\u1ea3n tin v\u1ec1 th\u1ecbt heo t\u0103ng gi\u00e1 v\u1edbi c\u1ea3nh ng\u01b0\u1eddi \u0111eo g\u0103ng tay tr\u1eafng \u0111ang x\u1eed l\u00fd th\u1ecbt t\u01b0\u01a1i tr\u00ean th\u1edbt.",
+    "ground_truth": {
+      "video_id": "L22_V022",
+      "frame_start": 645,
+      "frame_end": 705
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V246",
+        "frame_index": 2401,
+        "score": 0.37019583582878113
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V283",
+        "frame_index": 2860,
+        "score": 0.3696577548980713
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V283",
+        "frame_index": 2695,
+        "score": 0.36212414503097534
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V241",
+        "frame_index": 1495,
+        "score": 0.3617478311061859
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V057",
+        "frame_index": 2852,
+        "score": 0.35838428139686584
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_206",
+    "query_text_en": "Find a video of someone giving a presentation to a large audience in an auditorium, and everyone is listening attentively.",
+    "query_text_vi": "T\u00ecm m\u1ed9t video v\u1ec1 c\u1ea3nh m\u1ed9t ng\u01b0\u1eddi \u0111ang thuy\u1ebft tr\u00ecnh cho r\u1ea5t nhi\u1ec1u ng\u01b0\u1eddi kh\u00e1c trong h\u1ed9i tr\u01b0\u1eddng v\u00e0 ai c\u0169ng ch\u0103m ch\u00fa l\u1eafng nghe",
+    "ground_truth": {
+      "video_id": "L25_V045",
+      "frame_start": 33429,
+      "frame_end": 33505
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L25_V035",
+        "frame_index": 31085,
+        "score": 0.3042870759963989
+      },
+      {
+        "rank": 2,
+        "video_id": "L25_V044",
+        "frame_index": 2751,
+        "score": 0.30269482731819153
+      },
+      {
+        "rank": 3,
+        "video_id": "L25_V066",
+        "frame_index": 1172,
+        "score": 0.30261871218681335
+      },
+      {
+        "rank": 4,
+        "video_id": "L25_V022",
+        "frame_index": 40772,
+        "score": 0.3025345206260681
+      },
+      {
+        "rank": 5,
+        "video_id": "L25_V058",
+        "frame_index": 33059,
+        "score": 0.30163973569869995
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_207",
+    "query_text_en": "Find a video depicting a mock trial at SIU University.",
+    "query_text_vi": "T\u00ecm m\u1ed9t video c\u00f3 c\u1ea3nh m\u00f4 ph\u1ecfng m\u1ed9t phi\u00ean t\u00f2a x\u00e9t x\u1eed t\u1ea1i tr\u01b0\u1eddng \u0111\u1ea1i h\u1ecdc SIU",
+    "ground_truth": {
+      "video_id": "L25_V059",
+      "frame_start": 31912,
+      "frame_end": 31988
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L30_V070",
+        "frame_index": 1667,
+        "score": 0.3158692717552185
+      },
+      {
+        "rank": 2,
+        "video_id": "L25_V086",
+        "frame_index": 14203,
+        "score": 0.28713488578796387
+      },
+      {
+        "rank": 3,
+        "video_id": "L25_V082",
+        "frame_index": 3486,
+        "score": 0.2836618423461914
+      },
+      {
+        "rank": 4,
+        "video_id": "L25_V062",
+        "frame_index": 6908,
+        "score": 0.28364264965057373
+      },
+      {
+        "rank": 5,
+        "video_id": "L25_V060",
+        "frame_index": 38522,
+        "score": 0.28328976035118103
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_212",
+    "query_text_en": "Find a video of a chemistry lecture showing an experiment where a sample of sodium metal is added to a copper(II) solution.",
+    "query_text_vi": "T\u00ecm m\u1ed9t video v\u1ec1 c\u1ea3nh c\u00f3 n\u1ed9i dung c\u1ee7a m\u1ed9t b\u00e0i gi\u1ea3ng h\u00f3a h\u1ecdc v\u1ec1 m\u1ed9t th\u00ed nghi\u1ec7m khi cho m\u1eabu kim lo\u1ea1i Na v\u00e0o dung d\u1ecbch CuSO4",
+    "ground_truth": {
+      "video_id": "L25_V084",
+      "frame_start": 18552,
+      "frame_end": 18642
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L25_V039",
+        "frame_index": 10199,
+        "score": 0.33475199341773987
+      },
+      {
+        "rank": 2,
+        "video_id": "L25_V039",
+        "frame_index": 11099,
+        "score": 0.33203378319740295
+      },
+      {
+        "rank": 3,
+        "video_id": "L25_V039",
+        "frame_index": 8688,
+        "score": 0.32240256667137146
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V114",
+        "frame_index": 3472,
+        "score": 0.3194637894630432
+      },
+      {
+        "rank": 5,
+        "video_id": "L25_V039",
+        "frame_index": 8699,
+        "score": 0.319285124540329
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_301",
+    "query_text_en": "Find a video close-up shot of delicious vegetarian seitan noodles garnished with cilantro.",
+    "query_text_vi": "T\u00ecm video quay c\u1eadn c\u1ea3nh \u0111\u0129a m\u00ec c\u0103n chay x\u1ed1t n\u1ea5m th\u01a1m ngon \u0111\u01b0\u1ee3c trang tr\u00ed v\u1edbi h\u00e0nh ng\u00f2.",
+    "ground_truth": {
+      "video_id": "L26_V142",
+      "frame_start": 3520,
+      "frame_end": 3596
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V210",
+        "frame_index": 5629,
+        "score": 0.37031081318855286
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V210",
+        "frame_index": 5638,
+        "score": 0.36103928089141846
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V210",
+        "frame_index": 5602,
+        "score": 0.3579554557800293
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V210",
+        "frame_index": 5639,
+        "score": 0.3579281270503998
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V210",
+        "frame_index": 5650,
+        "score": 0.3564007580280304
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_313",
+    "query_text_en": "Find a video of using tongs to pick chicken meat from spicy hotpot to a dipping plate.",
+    "query_text_vi": "T\u00ecm video v\u1ec1 c\u1ea3nh d\u00f9ng k\u1eb9p g\u1eafp th\u1ecbt g\u00e0 t\u1eeb n\u1ed3i l\u1ea9u chua cay ra \u0111\u0129a ch\u1ea5m gia v\u1ecb.",
+    "ground_truth": {
+      "video_id": "L26_V238",
+      "frame_start": 6106,
+      "frame_end": 6182
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V095",
+        "frame_index": 6400,
+        "score": 0.3958157002925873
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V294",
+        "frame_index": 5888,
+        "score": 0.38708192110061646
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V402",
+        "frame_index": 4480,
+        "score": 0.38227084279060364
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V317",
+        "frame_index": 4762,
+        "score": 0.3815438449382782
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V179",
+        "frame_index": 7295,
+        "score": 0.3811802566051483
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_319",
+    "query_text_en": "Find a video of sprinkling chopped green onions over a plate of spicy red soft tofu.",
+    "query_text_vi": "T\u00ecm video v\u1ec1 c\u1ea3nh r\u1eafc h\u00e0nh l\u00e1 c\u1eaft nh\u1ecf l\u00ean \u0111\u0129a \u0111\u1eadu h\u1ee7 non x\u1ed1t cay \u0111\u1ecf r\u1ef1c.",
+    "ground_truth": {
+      "video_id": "L26_V286",
+      "frame_start": 2604,
+      "frame_end": 2680
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V089",
+        "frame_index": 2197,
+        "score": 0.3853001892566681
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V474",
+        "frame_index": 3633,
+        "score": 0.38123056292533875
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V378",
+        "frame_index": 3742,
+        "score": 0.3797178268432617
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V270",
+        "frame_index": 2629,
+        "score": 0.37720903754234314
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V061",
+        "frame_index": 5208,
+        "score": 0.37719058990478516
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_400",
+    "query_text_en": "Find a video of two men wearing aprons preparing food in a kitchen, with one of them holding a plate of food.",
+    "query_text_vi": "T\u00ecm video v\u1ec1 hai ng\u01b0\u1eddi \u0111\u00e0n \u00f4ng m\u1eb7c t\u1ea1p d\u1ec1 \u0111ang chu\u1ea9n b\u1ecb m\u00f3n \u0103n trong m\u1ed9t c\u0103n b\u1ebfp, m\u1ed9t ng\u01b0\u1eddi \u0111ang c\u1ea7m \u0111\u0129a th\u1ee9c \u0103n.",
+    "ground_truth": {
+      "video_id": "L26_V308",
+      "frame_start": 1320,
+      "frame_end": 1370
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V208",
+        "frame_index": 1723,
+        "score": 0.36688485741615295
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V357",
+        "frame_index": 712,
+        "score": 0.36057454347610474
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V373",
+        "frame_index": 6133,
+        "score": 0.36047640442848206
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V229",
+        "frame_index": 1785,
+        "score": 0.35770684480667114
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V111",
+        "frame_index": 1814,
+        "score": 0.35604220628738403
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_407",
+    "query_text_en": "Find a video showing a pot of boiling broth containing green vegetables, mushrooms, and other ingredients.",
+    "query_text_vi": "T\u00ecm video c\u00f3 c\u1ea3nh m\u1ed9t n\u1ed3i n\u01b0\u1edbc d\u00f9ng \u0111ang s\u00f4i, b\u00ean trong c\u00f3 rau xanh, n\u1ea5m v\u00e0 c\u00e1c nguy\u00ean li\u1ec7u kh\u00e1c.",
+    "ground_truth": {
+      "video_id": "L26_V402",
+      "frame_start": 5607,
+      "frame_end": 5657
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V427",
+        "frame_index": 5652,
+        "score": 0.4321550130844116
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V427",
+        "frame_index": 5120,
+        "score": 0.43089917302131653
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V437",
+        "frame_index": 5276,
+        "score": 0.4224766194820404
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V341",
+        "frame_index": 3676,
+        "score": 0.42165181040763855
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V341",
+        "frame_index": 3517,
+        "score": 0.41966286301612854
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_418",
+    "query_text_en": "Find a video showing someone cutting mushrooms with a knife on a wooden cutting board.",
+    "query_text_vi": "T\u00ecm video c\u00f3 c\u1ea3nh m\u1ed9t ng\u01b0\u1eddi \u0111ang d\u00f9ng dao c\u1eaft n\u1ea5m tr\u00ean th\u1edbt g\u1ed7.",
+    "ground_truth": {
+      "video_id": "L26_V447",
+      "frame_start": 2773,
+      "frame_end": 2823
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V300",
+        "frame_index": 3679,
+        "score": 0.4261879324913025
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V462",
+        "frame_index": 2656,
+        "score": 0.42076966166496277
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V342",
+        "frame_index": 2634,
+        "score": 0.42047348618507385
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V238",
+        "frame_index": 1780,
+        "score": 0.4164985716342926
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V497",
+        "frame_index": 2807,
+        "score": 0.41549861431121826
+      }
+    ]
+  },
+  {
+    "category": "FAIL",
+    "query_id": "kis_419",
+    "query_text_en": "Find a video showing a plate of white ingredients cut into long strips.",
+    "query_text_vi": "T\u00ecm video c\u00f3 c\u1ea3nh m\u1ed9t \u0111\u0129a nguy\u00ean li\u1ec7u m\u00e0u tr\u1eafng \u0111\u01b0\u1ee3c c\u1eaft th\u00e0nh nh\u1eefng s\u1ee3i d\u00e0i.",
+    "ground_truth": {
+      "video_id": "L26_V464",
+      "frame_start": 5176,
+      "frame_end": 5226
+    },
+    "first_gt_video_rank": null,
+    "closest_frame_distance": null,
+    "top5": [
+      {
+        "rank": 1,
+        "video_id": "L26_V398",
+        "frame_index": 2629,
+        "score": 0.40729841589927673
+      },
+      {
+        "rank": 2,
+        "video_id": "L26_V146",
+        "frame_index": 4886,
+        "score": 0.39881712198257446
+      },
+      {
+        "rank": 3,
+        "video_id": "L26_V171",
+        "frame_index": 2023,
+        "score": 0.3982175290584564
+      },
+      {
+        "rank": 4,
+        "video_id": "L26_V130",
+        "frame_index": 1427,
+        "score": 0.3948110044002533
+      },
+      {
+        "rank": 5,
+        "video_id": "L26_V378",
+        "frame_index": 2420,
+        "score": 0.39078158140182495
+      }
+    ]
+  }
+]
