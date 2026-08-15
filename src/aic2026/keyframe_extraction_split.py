@@ -294,7 +294,11 @@ def split_video_manifest(
         worker_dir.mkdir(parents=True, exist_ok=True)
         save_video_manifest(
             worker_dir / VIDEOS_MANIFEST_FILENAME,
-            VideoManifest(schema_version=VIDEOS_MANIFEST_SCHEMA_VERSION, videos=tuple(worker_videos)),
+            VideoManifest(
+                schema_version=VIDEOS_MANIFEST_SCHEMA_VERSION,
+                source_dir=manifest.source_dir,
+                videos=tuple(worker_videos),
+            ),
         )
 
     worker_infos: list[SplitWorkerInfo] = []

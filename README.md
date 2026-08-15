@@ -18,6 +18,15 @@ source .venv/bin/activate        # activate on POSIX
 pip install -e ".[dev]"
 ```
 
+### Keyframe-extraction dependency: ffmpeg
+
+Real-video keyframe extraction (`scripts/extract_keyframes.py --frame-reader ffmpeg`)
+decodes with `ffmpeg` and probes with `ffprobe`; both must be installed and on
+`PATH` **before** extraction starts (a preflight check fails fast otherwise).
+`ffmpeg >= 4.4` is required (the extractor uses `-fps_mode passthrough`).
+Install via your package manager, e.g. `brew install ffmpeg` (macOS),
+`apt install ffmpeg` (Debian/Ubuntu), or `conda install -c conda-forge ffmpeg`.
+
 ## Run tests
 
 ```bash

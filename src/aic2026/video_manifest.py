@@ -46,7 +46,9 @@ class VideoEntry:
 
     Fields:
         - video_id: the ``L*_V*`` video id (the filename stem).
-        - path: path to the video file.
+        - path: path to the video file. When the file is inside the manifest's
+          ``source_dir`` the path is stored relative to it (so the manifest is
+          relocatable); paths outside ``source_dir`` are stored absolute.
         - file_size_bytes: size of the video file in bytes.
         - duration_seconds: optional duration in seconds (``None`` when
           unknown or metadata probing is disabled).
@@ -251,6 +253,25 @@ def _probe_video(path: Path) -> tuple[float, float, int]:
 # -------------------------------------------------------------------- generation
 
 
+def _relocatable_path(path: Path, source_dir: Path) -> str:
+    """Return ``path`` as a path relative to ``source_dir`` when possible.
+
+    Expected input:
+        - path: an absolute file path inside ``source_dir`` (e.g. a discovered
+          ``*.mp4``).
+        - source_dir: the resolved directory the videos were discovered in.
+
+    Returns:
+        - ``str(path.relative_to(source_dir))`` when the path is inside
+          ``source_dir``; otherwise the absolute path unchanged (so files that
+          escape the source tree are never lost).
+    """
+    try:
+        return str(path.resolve().relative_to(source_dir))
+    except ValueError:
+        return str(path.resolve())
+
+
 def build_video_manifest(
     video_dir: Path | str,
     include_metadata: bool = True,
@@ -264,12 +285,18 @@ def build_video_manifest(
     ``duration_seconds``, and ``num_frames``; a probing failure is raised
     rather than silently producing an invalid manifest.
 
+    Video paths are stored relative to ``source_dir`` so the serialized
+    manifest is relocatable across machines; consumers that run on a different
+    host resolve the relative paths against a ``video_root`` override (see
+    ``aic2026.keyframe_extraction.extract_keyframes``).
+
     Expected input:
         - video_dir: directory containing ``*.mp4`` files.
         - include_metadata: if True, probe each video with ``ffprobe``.
 
     Returns:
-        - A validated :class:`VideoManifest`.
+        - A validated :class:`VideoManifest` whose entry ``path`` fields are
+          relative to ``source_dir``.
 
     Raises:
         - FileNotFoundError: if ``video_dir`` does not exist.
@@ -282,6 +309,7 @@ def build_video_manifest(
         raise FileNotFoundError(f"video directory does not exist: {video_dir}")
     if not video_dir.is_dir():
         raise ValueError(f"video path is not a directory: {video_dir}")
+    source_dir = video_dir.resolve()
 
     entries: list[VideoEntry] = []
     seen: set[str] = set()
@@ -304,7 +332,7 @@ def build_video_manifest(
         entries.append(
             VideoEntry(
                 video_id=video_id,
-                path=str(path.resolve()),
+                path=_relocatable_path(path, source_dir),
                 file_size_bytes=int(size),
                 duration_seconds=duration_seconds,
                 fps=fps,
@@ -315,7 +343,7 @@ def build_video_manifest(
     entries.sort(key=lambda entry: entry.video_id)
     return VideoManifest(
         schema_version=VIDEO_MANIFEST_SCHEMA_VERSION,
-        source_dir=str(video_dir.resolve()),
+        source_dir=str(source_dir),
         videos=tuple(entries),
         created_at=datetime.now(timezone.utc).isoformat(),
     )

@@ -273,11 +273,127 @@ class TestSplitVideoManifest:
         with pytest.raises(FileNotFoundError):
             split_video_manifest(tmp_path / "nope.json", 2, tmp_path / "out")
 
+    def test_propagates_source_dir_into_workers(self, tmp_path: Path) -> None:
+        entries = _make_videos(tmp_path, count=2)
+        manifest = VideoManifest(
+            schema_version="1.0",
+            source_dir=str(tmp_path),
+            videos=tuple(entries),
+        )
+        videos_path = tmp_path / "videos.json"
+        save_video_manifest(videos_path, manifest)
+        split_dir = tmp_path / "splits"
+        split_video_manifest(videos_path, 2, split_dir)
+        for worker in range(2):
+            worker_manifest = load_video_manifest(
+                split_dir / worker_dir_name(worker) / VIDEOS_MANIFEST_FILENAME
+            )
+            assert worker_manifest.source_dir == str(tmp_path)
+            assert all(
+                Path(worker_manifest.source_dir, e.path).is_file() for e in worker_manifest.videos
+            )
+
 
 # ------------------------------------------------------------------ extraction
 
 
 class TestExtractKeyframes:
+    def test_relative_paths_resolve_against_video_root(
+        self, tmp_path: Path
+    ) -> None:
+        # Videos live in one tree; the manifest records relative paths and the
+        # extractor is pointed at a (moved) root via video_root.
+        video_dir = tmp_path / "videos"
+        video_dir.mkdir()
+        entries = []
+        for i in range(2):
+            vid = f"L21_V{i + 1:03d}"
+            write_synthetic_video(
+                video_dir / f"{vid}.json",
+                _scene_values(200, scene_length=10),
+            )
+            entries.append(VideoEntry(video_id=vid, path=f"{vid}.json", num_frames=200))
+        videos_path = video_dir / "videos.json"
+        save_video_manifest(
+            videos_path,
+            VideoManifest(schema_version="1.0", videos=tuple(entries)),
+        )
+
+        moved_root = tmp_path / "moved"
+        moved_root.mkdir()
+        for name in ("L21_V001.json", "L21_V002.json"):
+            (moved_root / name).write_bytes((video_dir / name).read_bytes())
+
+        out = tmp_path / "shard"
+        manifest = extract_keyframes(
+            videos_path,
+            out,
+            _config(),
+            video_root=moved_root,
+        )
+        assert manifest.num_videos == 2
+        assert (out / FRAMES_FILENAME).is_file()
+
+    def test_relative_paths_resolve_against_source_dir(
+        self, tmp_path: Path
+    ) -> None:
+        # Relative paths without an explicit video_root resolve against the
+        # manifest's source_dir (the relocatable-manifest default).
+        video_dir = tmp_path / "videos"
+        video_dir.mkdir()
+        entries = []
+        for i in range(2):
+            vid = f"L21_V{i + 1:03d}"
+            write_synthetic_video(
+                video_dir / f"{vid}.json",
+                _scene_values(200, scene_length=10),
+            )
+            entries.append(VideoEntry(video_id=vid, path=f"{vid}.json", num_frames=200))
+        videos_path = video_dir / "videos.json"
+        save_video_manifest(
+            videos_path,
+            VideoManifest(
+                schema_version="1.0",
+                source_dir=str(video_dir),
+                videos=tuple(entries),
+            ),
+        )
+
+        out = tmp_path / "shard"
+        manifest = extract_keyframes(videos_path, out, _config())
+        assert manifest.num_videos == 2
+
+    def test_absolute_paths_backward_compatible(self, tmp_path: Path) -> None:
+        # Legacy manifests with absolute paths keep working without video_root.
+        entries = _make_videos(tmp_path, count=2)
+        assert all(Path(e.path).is_absolute() for e in entries)
+        videos_path = _save(tmp_path, entries)
+        out = tmp_path / "shard"
+        manifest = extract_keyframes(videos_path, out, _config())
+        assert manifest.num_videos == 2
+
+    def test_unresolvable_relative_path_raises(self, tmp_path: Path) -> None:
+        entries = [VideoEntry(video_id="L21_V001", path="L21_V001.json", num_frames=100)]
+        videos_path = _save(tmp_path, entries)
+        with pytest.raises(ValueError, match="video_root"):
+            extract_keyframes(videos_path, tmp_path / "shard", _config())
+
+    def test_missing_ffmpeg_raises_before_extraction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entries = _make_videos(tmp_path, count=1)
+        videos_path = _save(tmp_path, entries)
+        monkeypatch.setattr(
+            "aic2026.keyframe_extraction.shutil.which",
+            lambda name: None,
+        )
+        with pytest.raises(ExtractionError, match="ffmpeg"):
+            extract_keyframes(
+                videos_path,
+                tmp_path / "shard",
+                ExtractionConfig(frame_reader="ffmpeg", target_keyframes_per_video=6),
+            )
+
     def test_output_contract(self, split_videos: tuple[Path, list[Path]], tmp_path: Path) -> None:
         _, worker_files = split_videos
         worker_videos = load_video_manifest(worker_files[0])

@@ -41,6 +41,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="path to a videos.json manifest (video_id + path entries)",
     )
     parser.add_argument(
+        "--video-root",
+        type=str,
+        default=None,
+        help=(
+            "root directory that relative video paths in the manifest are "
+            "resolved against (overrides the manifest's source_dir); required "
+            "when the manifest is relocatable and videos live outside "
+            "source_dir"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         required=True,
@@ -253,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             progress=reporter,
             resume=args.resume,
             overwrite=args.overwrite,
+            video_root=args.video_root,
         )
     except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

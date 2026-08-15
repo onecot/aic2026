@@ -51,6 +51,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="path to a videos.json manifest (video_id + path entries)",
     )
     parser.add_argument(
+        "--video-root",
+        type=str,
+        default=None,
+        help=(
+            "root directory that relative video paths in the manifest are "
+            "resolved against (overrides the manifest's source_dir)"
+        ),
+    )
+    parser.add_argument(
         "--detector",
         choices=SHOT_DETECTOR_NAMES,
         default="omnishotcut",
@@ -186,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 sampler_config,
                 progress=reporter,
                 outlier_std_threshold=args.outlier_std_threshold,
+                video_root=args.video_root,
             )
     except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

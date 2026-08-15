@@ -184,10 +184,19 @@ class TestBuildVideoManifest:
         manifest = build_video_manifest(video_dir, include_metadata=False)
         assert {e.file_size_bytes for e in manifest.videos} == {1024}
 
-    def test_paths_absolute(self, video_dir: Path) -> None:
+    def test_paths_relative_to_source_dir(self, video_dir: Path) -> None:
         manifest = build_video_manifest(video_dir, include_metadata=False)
         for entry in manifest.videos:
-            assert Path(entry.path).is_absolute()
+            assert not Path(entry.path).is_absolute()
+            assert Path(manifest.source_dir, entry.path).resolve() == video_dir.joinpath(entry.path).resolve()
+            assert entry.path == f"{entry.video_id}.mp4"
+
+    def test_relative_paths_resolve_against_source_dir(self, video_dir: Path) -> None:
+        manifest = build_video_manifest(video_dir, include_metadata=False)
+        for entry in manifest.videos:
+            resolved = Path(manifest.source_dir, entry.path).resolve()
+            assert resolved.is_file()
+            assert resolved == (video_dir / f"{entry.video_id}.mp4").resolve()
 
     def test_source_dir_and_created_at(self, video_dir: Path) -> None:
         manifest = build_video_manifest(video_dir, include_metadata=False)

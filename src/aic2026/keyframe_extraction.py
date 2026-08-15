@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -177,17 +178,22 @@ class VideoManifest:
     Fields:
         - schema_version: video manifest schema version
           (``VIDEOS_MANIFEST_SCHEMA_VERSION``).
+        - source_dir: optional directory the videos were discovered in; used
+          to resolve relative ``path`` values that survived a relocatable
+          ``videos.json`` (empty when unknown or the paths are absolute).
         - videos: the video entries, in file order.
     """
 
     schema_version: str
     videos: tuple[VideoEntry, ...]
+    source_dir: str = ""
 
     def __post_init__(self) -> None:
         _require(
             self.schema_version == VIDEOS_MANIFEST_SCHEMA_VERSION,
             f"unsupported video manifest schema {self.schema_version!r}",
         )
+        _require(isinstance(self.source_dir, str), "source_dir must be a string")
         ids = [entry.video_id for entry in self.videos]
         _require(len(set(ids)) == len(ids), "video ids must be unique within a manifest")
 
@@ -195,20 +201,96 @@ class VideoManifest:
         """Serialize to a JSON-safe dict."""
         return {
             "schema_version": self.schema_version,
+            "source_dir": self.source_dir,
             "videos": [entry.to_dict() for entry in self.videos],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VideoManifest":
-        """Deserialize from a :meth:`to_dict` dict."""
+        """Deserialize from a :meth:`to_dict` dict.
+
+        Missing ``source_dir`` (legacy manifests) defaults to ``""``.
+        """
         return cls(
             schema_version=data["schema_version"],
+            source_dir=data.get("source_dir", ""),
             videos=tuple(VideoEntry.from_dict(entry) for entry in data["videos"]),
         )
 
     def by_id(self) -> dict[str, VideoEntry]:
         """Return ``video_id -> entry`` mapping."""
         return {entry.video_id: entry for entry in self.videos}
+
+
+def resolve_video_path(
+    path: str,
+    *,
+    source_dir: str = "",
+    video_root: Path | str | None = None,
+) -> Path:
+    """Resolve a manifest video path to an absolute filesystem path.
+
+    Absolute paths are returned unchanged (backward compatibility with legacy
+    manifests). Relative paths resolve against ``video_root`` when provided,
+    then against the manifest's ``source_dir`` when present.
+
+    Expected input:
+        - path: the ``path`` stored on a :class:`VideoEntry`.
+        - source_dir: the manifest's ``source_dir`` (empty when unknown).
+        - video_root: optional override root for relative paths.
+
+    Returns:
+        - The resolved absolute path.
+
+    Raises:
+        - ValueError: if ``path`` is relative and neither ``video_root`` nor
+          ``source_dir`` provides a base to resolve it against.
+    """
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    base = Path(video_root) if video_root is not None else (Path(source_dir) if source_dir else None)
+    if base is None:
+        raise ValueError(
+            f"cannot resolve relative video path {path!r}: pass a video_root "
+            "override or ensure the manifest records a source_dir"
+        )
+    return base / candidate
+
+
+def require_media_tools(
+    *,
+    ffmpeg: bool = True,
+    ffprobe: bool = True,
+) -> None:
+    """Fail before extraction starts if required media tools are unavailable.
+
+    FFmpeg and ffprobe are invoked on ``PATH`` by the frame reader and the
+    probe helpers. Detecting their absence up front avoids starting a
+    multi-hour job that fails on the first video.
+
+    Expected input:
+        - ffmpeg: if True, require ``ffmpeg`` on ``PATH``.
+        - ffprobe: if True, require ``ffprobe`` on ``PATH``.
+
+    Returns:
+        - None.
+
+    Raises:
+        - ExtractionError: listing every required tool that is missing.
+    """
+    missing = [
+        tool
+        for tool, required in (("ffmpeg", ffmpeg), ("ffprobe", ffprobe))
+        if required and shutil.which(tool) is None
+    ]
+    if missing:
+        raise ExtractionError(
+            "required media tools not found on PATH: "
+            + ", ".join(missing)
+            + ". Install ffmpeg >= 4.4 (with ffprobe) and ensure both are on "
+            "PATH before running extraction."
+        )
 
 
 def load_video_manifest(path: Path | str) -> VideoManifest:
@@ -895,6 +977,7 @@ def extract_keyframes(
     progress: ProgressReporter | None = None,
     resume: bool = True,
     overwrite: bool = False,
+    video_root: Path | str | None = None,
 ) -> ExtractionManifest:
     """Run resumable keyframe extraction over a video manifest.
 
@@ -909,6 +992,10 @@ def extract_keyframes(
         - overwrite: if True, replace an existing artifact; otherwise an
           existing non-empty output without a matching complete manifest
           raises :class:`ExtractionError`.
+        - video_root: optional root directory that relative video paths in the
+          manifest are resolved against (overrides the manifest's
+          ``source_dir``). Absolute paths are used unchanged, so legacy
+          manifests keep working without this flag.
 
     Returns:
         - The :class:`ExtractionManifest` describing the produced artifact.
@@ -935,6 +1022,12 @@ def extract_keyframes(
         if existing.config_hash == config_hash and (output_dir / FRAMES_FILENAME).is_file():
             logger.info("artifact already complete at %s; skipping extraction", output_dir)
             return existing
+
+    # Fail fast on missing media tools before the (potentially long) run.
+    if config.frame_reader == "ffmpeg" or (
+        config.extractor == "omnishotcut_adaptive" and config.detector == "omnishotcut"
+    ):
+        require_media_tools(ffmpeg=True, ffprobe=True)
 
     # A matching checkpoint makes the output a legitimate resume target even
     # though the directory is not empty; anything else non-empty is refused
@@ -1018,8 +1111,13 @@ def extract_keyframes(
         if entry.video_id in completed_ids:
             completed_video += 1
             continue
+        video_path = resolve_video_path(
+            entry.path,
+            source_dir=videos.source_dir,
+            video_root=video_root,
+        )
         extractor = _build_extractor(entry.video_id, config, shot_detector=shot_detector)
-        keyframes = extractor.extract(entry.path)
+        keyframes = extractor.extract(video_path)
         frames_scanned[entry.video_id] = extractor.last_frames_scanned
         write_video_ndjson(staging / f"{entry.video_id}.ndjson", keyframes)
         write_video_map(staging / f"{entry.video_id}.csv", keyframes)

@@ -1560,7 +1560,7 @@ python scripts/build_video_manifest.py \
   "videos": [
     {
       "video_id": "L21_V001",
-      "path": ".../data/raw/videos/L21_V001.mp4",
+      "path": "L21_V001.mp4",
       "file_size_bytes": 15402,
       "duration_seconds": 2.0,
       "fps": 25.0,
@@ -1578,6 +1578,12 @@ and `num_frames` (falling back to `round(duration * fps)` when `nb_frames` is
 absent); a probing failure aborts the build rather than producing an invalid
 manifest. `--no-metadata` skips probing, leaving those fields `null`. The
 manifest is written atomically (same-directory temp file + rename).
+
+Video paths are stored **relative to `source_dir`**, so the manifest is
+relocatable: the same `videos.json` can be copied to another machine or shared
+with distributed workers. Consumers resolve relative paths against their own
+`--video-root` override (falling back to the recorded `source_dir`), so
+machine-specific absolute paths never need to be baked into the artifact.
 
 Schema compatibility: the serialized format is additive over the existing
 `aic2026.keyframe_extraction` video-manifest schema (`schema_version` stays
@@ -1623,6 +1629,10 @@ Extraction consumes a video manifest listing `video_id` + `path` entries
   ]
 }
 ```
+
+Paths may be absolute (legacy manifests) or relative; relative paths are
+resolved against the manifest's `source_dir` (when present) or the
+`--video-root` override (Section 20, Step 2).
 
 ### Step 1: split (deterministic and balanced)
 
@@ -1670,6 +1680,32 @@ python scripts/extract_keyframes.py \
   --frame-reader ffmpeg \
   --progress auto
 ```
+
+**Dependencies (Step 2 and Step 1b only).** Real-video extraction decodes with
+`ffmpeg` and probes with `ffprobe`; both must be installed and on `PATH` before
+extraction starts, otherwise the run fails up front (a preflight check runs
+before any video is processed). ffmpeg >= 4.4 is required (the extractor uses
+`-fps_mode passthrough`). Install via your package manager, e.g.
+`brew install ffmpeg` (macOS), `apt install ffmpeg` (Debian/Ubuntu), or
+`conda install -c conda-forge ffmpeg`. The splitter, merge step, and the
+embedding pipeline do not call ffmpeg.
+
+**Relocatable manifests and `--video-root`.** Video paths in a `videos.json`
+may be relative to the manifest's `source_dir`. When a worker runs on a
+machine where the videos live somewhere else, point the extractor at the new
+location without editing the manifest:
+
+```bash
+python scripts/extract_keyframes.py \
+  --videos data/keyframe-splits/worker_000/videos.json \
+  --video-root /mnt/videos \
+  --output-dir data/keyframes/shard_000 \
+  --target-keyframes-per-video 60 \
+  --frame-reader ffmpeg
+```
+
+Without `--video-root`, relative paths resolve against the manifest's
+`source_dir`; absolute paths (legacy manifests) are used unchanged.
 
 Use `--sampling-ratio 0.02` instead of `--target-keyframes-per-video` to
 select a fixed fraction of each video's frames (exactly one of the two is

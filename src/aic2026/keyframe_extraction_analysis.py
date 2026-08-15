@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from aic2026.keyframe_extraction import VideoManifest, load_video_manifest
+from aic2026.keyframe_extraction import VideoManifest, load_video_manifest, resolve_video_path
 from aic2026.keyframe_sampling import create_sampler
 from aic2026.progress import ProgressReporter
 from aic2026.shot_detection import Shot, ShotDetector, normalize_shots
@@ -374,6 +374,7 @@ def analyze_shot_distribution(
     *,
     progress: ProgressReporter | None = None,
     outlier_std_threshold: float = 2.0,
+    video_root: Path | str | None = None,
 ) -> ShotDistributionReport:
     """Profile shot distribution and adaptive sampling output over a manifest.
 
@@ -391,6 +392,9 @@ def analyze_shot_distribution(
         - outlier_std_threshold: videos whose shot count or keyframe estimate
           exceed the mean by this many standard deviations are flagged as
           outliers (default 2.0).
+        - video_root: optional root directory that relative video paths in the
+          manifest are resolved against (overrides the manifest's
+          ``source_dir``); absolute paths are used unchanged.
 
     Returns:
         - A :class:`ShotDistributionReport` describing the manifest.
@@ -427,7 +431,13 @@ def analyze_shot_distribution(
     processed_frames = 0
     for completed, entry in enumerate(manifest.videos, start=1):
         with progress.stages.time("detect_shots") if progress is not None else _null_timer():
-            shots = detector.detect(entry.path)
+            shots = detector.detect(
+                resolve_video_path(
+                    entry.path,
+                    source_dir=manifest.source_dir,
+                    video_root=video_root,
+                )
+            )
         fps = detector.last_fps
         num_frames = detector.last_num_frames
         if fps is None or fps <= 0.0:
