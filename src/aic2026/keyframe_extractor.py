@@ -411,6 +411,7 @@ def write_synthetic_video(
     width: int = 8,
     height: int = 8,
     pts_times: Sequence[float] | None = None,
+    shots: Sequence[tuple[int, int]] | None = None,
 ) -> Path:
     """Write a synthetic video descriptor file.
 
@@ -420,6 +421,10 @@ def write_synthetic_video(
         - fps / width / height: descriptor metadata.
         - pts_times: optional per-frame presentation times (defaults to
           ``frame_index / fps``).
+        - shots: optional inclusive ``(start_frame, end_frame)`` shot ranges,
+          embedded as ``{"start_frame": ..., "end_frame": ...}`` rows so the
+          same descriptor drives both the frame reader and the synthetic shot
+          detector (adaptive pipeline tests).
 
     Returns:
         - The written path.
@@ -445,15 +450,19 @@ def write_synthetic_video(
         "height": height,
         "frames": frames,
     }
+    if shots is not None:
+        for start, end in shots:
+            if start < 0 or end < start:
+                raise ValueError(f"invalid shot range ({start}, {end})")
+            if end >= len(values):
+                raise ValueError(f"shot end frame {end} exceeds {len(values)} frames")
+        payload["shots"] = [{"start_frame": int(start), "end_frame": int(end)} for start, end in shots]
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
     tmp.replace(path)
     return path
-
-
-# ---------------------------------------------------------------- change scorer
 
 
 class FrameDifferenceScorer:
@@ -612,6 +621,47 @@ def compute_anchor_frames(
     return sorted(anchors)
 
 
+def _downsample_anchors(anchors: Sequence[int], target: int) -> list[int]:
+    """Deterministically reduce a sorted anchor list to ``target`` indices.
+
+    Frame 0 and the last frame are always preserved; remaining slots are
+    filled by evenly spaced anchors (nearest-neighbor position in the sorted
+    list), which keeps the output deterministic and temporally ordered.
+
+    Expected input:
+        - anchors: sorted anchor indices.
+        - target: number of anchors to keep (>= 1).
+
+    Returns:
+        - Sorted anchor indices of length ``target``.
+
+    Raises:
+        - ValueError: if ``target`` is not a positive integer or there are
+          fewer anchors than ``target`` (callers must only pass over-budget
+          anchor lists).
+    """
+    if not isinstance(target, int) or isinstance(target, bool) or target < 1:
+        raise ValueError(f"target must be a positive integer, got {target!r}")
+    if len(anchors) <= target:
+        raise ValueError(f"expected more than {target} anchors, got {len(anchors)}")
+    kept: list[int] = []
+    # The two endpoints always win their slots.
+    kept.append(anchors[0])
+    if target == 1:
+        return kept
+    kept.append(anchors[-1])
+    if target == 2:
+        return kept
+    # Fill the remaining (target - 2) interior slots with evenly spaced
+    # anchors, choosing the nearest existing anchor position.
+    step = (len(anchors) - 1) / (target - 1)
+    interior: set[int] = set()
+    for slot in range(1, target - 1):
+        interior.add(anchors[round(slot * step)])
+    kept.extend(interior)
+    return sorted(kept)
+
+
 def temporal_suppression(
     peaks: Sequence[int],
     scores: np.ndarray,
@@ -665,25 +715,28 @@ def select_keyframes(
 ) -> list[int]:
     """Select keyframe indices from per-frame change scores.
 
-    Anchor frames are always kept: frame 0, the last frame, and (when
-    ``anchor_interval_frames`` is given) every ``anchor_interval_frames``-th
-    frame between them. Candidate peaks are then suppressed by
+    ``target`` is a hard cap on the **total** number of keyframes returned
+    (anchors + peaks). Anchor frames are computed first: frame 0, the last
+    frame, and (when ``anchor_interval_frames`` is given) every
+    ``anchor_interval_frames``-th frame between them. If the anchors alone
+    meet or exceed ``target``, they are deterministically downsampled to
+    ``target`` anchors (always preserving frame 0 and the last frame) and no
+    peaks are added. Otherwise, the best (highest-scoring) peaks are kept so
+    the total never exceeds ``target``. Candidate peaks are suppressed by
     ``min_temporal_distance`` and must also stay ``min_temporal_distance``
-    frames away from anchors. When ``target`` is given, the best
-    (highest-scoring) peaks are kept so the total (anchors + peaks) does not
-    exceed ``target``; if anchors alone reach or exceed ``target``, no peaks
-    are added.
+    frames away from anchors.
 
     Expected input:
         - scores: per-frame change scores.
         - min_temporal_distance: minimum frame gap between selected keyframes.
         - peak_threshold: minimum score for a candidate peak.
-        - target: optional maximum number of keyframes (``None`` = no cap).
+        - target: optional hard maximum on total keyframes (``None`` = no cap).
         - anchor_interval_frames: optional uniform anchor spacing
           (``None`` = first and last frame only).
 
     Returns:
-        - Sorted keyframe frame indices (anchors included).
+        - Sorted keyframe frame indices (anchors included), with
+          ``len(result) <= target`` when ``target`` is given.
 
     Raises:
         - ValueError: if ``target`` is invalid.
@@ -693,6 +746,8 @@ def select_keyframes(
     if not len(scores):
         return []
     anchors = compute_anchor_frames(len(scores), anchor_interval_frames)
+    if target is not None and len(anchors) > target:
+        anchors = _downsample_anchors(anchors, target)
     max_peaks = None if target is None else max(0, target - len(anchors))
     accepted = temporal_suppression(
         candidate_peaks(scores, peak_threshold),
@@ -739,9 +794,11 @@ class DakeKeyframeExtractor:
           ``jpeg_size`` scorer is the DAKE-style JPEG-size-change scorer).
         - min_temporal_distance: minimum frame gap between keyframes.
         - peak_threshold: minimum score for a candidate peak.
-        - target: optional maximum keyframes per video (``None`` = no cap).
+        - target: optional hard cap on the total number of keyframes per
+          video, including anchors (``None`` = no cap).
         - anchor_interval_seconds: optional uniform anchor spacing in seconds
-          (first and last frames are always anchors).
+          (first and last frames are always anchors; when anchors alone would
+          exceed ``target`` they are deterministically downsampled to it).
 
     Returns:
         - An extractor instance.

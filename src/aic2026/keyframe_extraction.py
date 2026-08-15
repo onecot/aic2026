@@ -38,9 +38,10 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from aic2026.canonical import VIDEO_ID_PATTERN, KeyframeTiming
+from aic2026.image_embedder import DEVICE_CHOICES
 from aic2026.keyframe_extractor import (
     DakeKeyframeExtractor,
     FRAME_READER_NAMES,
@@ -49,7 +50,13 @@ from aic2026.keyframe_extractor import (
     create_frame_reader,
     create_scorer,
 )
+from aic2026.keyframe_sampling import SAMPLER_NAMES
 from aic2026.progress import ProgressReporter
+from aic2026.shot_detection import (
+    DEFAULT_OMNISHOTCUT_FILENAME,
+    SHOT_DETECTOR_NAMES,
+    create_shot_detector,
+)
 
 #: Schema version of the extraction manifest.
 EXTRACTION_MANIFEST_SCHEMA_VERSION = "1.0"
@@ -248,31 +255,55 @@ class ExtractionConfig:
     """Validated parameters for one extraction run.
 
     Exactly one of ``target_keyframes_per_video`` or ``sampling_ratio`` must
-    be provided.
+    be provided when ``extractor == "dake"`` (the ``omnishotcut_adaptive``
+    extractor requires neither).
 
     Fields:
-        - extractor: extractor implementation name (``dake``).
+        - extractor: extractor implementation name (``dake`` or
+          ``omnishotcut_adaptive``).
         - extractor_version: extractor version string.
         - scorer: change-scorer name (``frame_difference``).
         - frame_reader: frame reader name (``ffmpeg`` or ``synthetic``).
+        - detector: shot-detector name (``omnishotcut`` or ``synthetic``) for
+          the ``omnishotcut_adaptive`` extractor.
+        - sampler: sampler name (``adaptive_v1``) for the
+          ``omnishotcut_adaptive`` extractor.
+        - short_shot_seconds / long_shot_seconds / uniform_interval_seconds:
+          adaptive-sampler thresholds (shots shorter than ``short_shot_seconds``
+          get only their middle frame; shots up to ``long_shot_seconds`` add a
+          uniform sample; longer shots also get high-change frames).
+        - omnishotcut_mode / omnishotcut_overlap / device / checkpoint /
+          omnishotcut_filename: OmniShotCut model options.
         - min_temporal_distance: minimum frame gap between keyframes.
         - peak_threshold: minimum score for a candidate peak.
-        - target_keyframes_per_video: fixed per-video keyframe cap (mutually
-          exclusive with ``sampling_ratio``).
+        - target_keyframes_per_video: hard total per-video keyframe cap including
+          anchors (mutually exclusive with ``sampling_ratio``; ``dake`` only).
         - sampling_ratio: fraction of frames selected as keyframes (mutually
-          exclusive with ``target_keyframes_per_video``).
+          exclusive with ``target_keyframes_per_video``; ``dake`` only).
         - max_side: longest side (pixels) of downscaled grayscale frames.
         - fps: optional fixed video frame rate override.
         - jpeg_quality: JPEG quality in ``[1, 100]`` for the ``jpeg_size``
           scorer.
         - anchor_interval_seconds: optional uniform anchor spacing in seconds
-          (first and last frames are always anchors).
+          (first and last frames are always anchors; anchors are downsampled
+          deterministically when they would exceed
+          ``target_keyframes_per_video``).
     """
 
     extractor: str = "dake"
     extractor_version: str = "2.0"
     scorer: str = "frame_difference"
     frame_reader: str = "ffmpeg"
+    detector: str = "omnishotcut"
+    sampler: str = "adaptive_v1"
+    short_shot_seconds: float = 5.0
+    long_shot_seconds: float = 60.0
+    uniform_interval_seconds: float = 10.0
+    omnishotcut_mode: str = "clean_shot"
+    omnishotcut_overlap: int = 20
+    device: str = "auto"
+    checkpoint: str | None = None
+    omnishotcut_filename: str = DEFAULT_OMNISHOTCUT_FILENAME
     min_temporal_distance: int = 30
     peak_threshold: float = 8.0
     target_keyframes_per_video: int | None = None
@@ -283,7 +314,10 @@ class ExtractionConfig:
     anchor_interval_seconds: float | None = None
 
     def __post_init__(self) -> None:
-        _require(self.extractor == "dake", f"unsupported extractor {self.extractor!r}")
+        _require(
+            self.extractor in ("dake", "omnishotcut_adaptive"),
+            f"unsupported extractor {self.extractor!r}; expected dake or omnishotcut_adaptive",
+        )
         _require(isinstance(self.extractor_version, str) and self.extractor_version != "", "extractor_version required")
         _require(self.scorer in SCORER_NAMES, f"unsupported scorer {self.scorer!r}; expected {SCORER_NAMES}")
         _require(self.frame_reader in FRAME_READER_NAMES, f"unsupported frame reader {self.frame_reader!r}; expected {FRAME_READER_NAMES}")
@@ -301,10 +335,16 @@ class ExtractionConfig:
             self.sampling_ratio is None or 0.0 < float(self.sampling_ratio) <= 1.0,
             "sampling_ratio must be in (0, 1] or None",
         )
-        _require(
-            (self.target_keyframes_per_video is None) != (self.sampling_ratio is None),
-            "exactly one of target_keyframes_per_video or sampling_ratio is required",
-        )
+        if self.extractor == "omnishotcut_adaptive":
+            _require(
+                self.target_keyframes_per_video is None and self.sampling_ratio is None,
+                "omnishotcut_adaptive does not support target_keyframes_per_video or sampling_ratio",
+            )
+        else:
+            _require(
+                (self.target_keyframes_per_video is None) != (self.sampling_ratio is None),
+                "exactly one of target_keyframes_per_video or sampling_ratio is required",
+            )
         _require(
             isinstance(self.max_side, int) and not isinstance(self.max_side, bool) and self.max_side >= 1,
             "max_side must be a positive integer",
@@ -318,9 +358,55 @@ class ExtractionConfig:
             self.anchor_interval_seconds is None or float(self.anchor_interval_seconds) > 0.0,
             "anchor_interval_seconds must be > 0 when provided",
         )
+        if self.extractor == "omnishotcut_adaptive":
+            _require(self.detector in SHOT_DETECTOR_NAMES, f"unsupported shot detector {self.detector!r}; expected {SHOT_DETECTOR_NAMES}")
+            _require(self.sampler in SAMPLER_NAMES, f"unsupported sampler {self.sampler!r}; expected {SAMPLER_NAMES}")
+            _require(
+                0.0 < float(self.short_shot_seconds) < float(self.long_shot_seconds),
+                "need 0 < short_shot_seconds < long_shot_seconds",
+            )
+            _require(float(self.uniform_interval_seconds) > 0.0, "uniform_interval_seconds must be > 0")
+            _require(
+                self.omnishotcut_mode in ("clean_shot", "default"),
+                f"unsupported omnishotcut_mode {self.omnishotcut_mode!r}; expected clean_shot or default",
+            )
+            _require(
+                isinstance(self.omnishotcut_overlap, int) and not isinstance(self.omnishotcut_overlap, bool) and self.omnishotcut_overlap >= 0,
+                "omnishotcut_overlap must be a non-negative integer",
+            )
+            _require(self.device in DEVICE_CHOICES, f"unsupported device {self.device!r}; expected {DEVICE_CHOICES}")
+            _require(self.checkpoint is None or (isinstance(self.checkpoint, str) and self.checkpoint != ""), "checkpoint must be a non-empty string or None")
+            _require(isinstance(self.omnishotcut_filename, str) and self.omnishotcut_filename != "", "omnishotcut_filename required")
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-safe dict."""
+        """Serialize to a JSON-safe dict.
+
+        The ``omnishotcut_adaptive`` fields are only included for that
+        extractor, so ``dake`` configurations keep a byte-stable identity
+        (resume compatibility with existing dake artifacts).
+        """
+        if self.extractor == "omnishotcut_adaptive":
+            return {
+                "extractor": self.extractor,
+                "extractor_version": self.extractor_version,
+                "scorer": self.scorer,
+                "frame_reader": self.frame_reader,
+                "detector": self.detector,
+                "sampler": self.sampler,
+                "short_shot_seconds": self.short_shot_seconds,
+                "long_shot_seconds": self.long_shot_seconds,
+                "uniform_interval_seconds": self.uniform_interval_seconds,
+                "omnishotcut_mode": self.omnishotcut_mode,
+                "omnishotcut_overlap": self.omnishotcut_overlap,
+                "device": self.device,
+                "checkpoint": self.checkpoint,
+                "omnishotcut_filename": self.omnishotcut_filename,
+                "min_temporal_distance": self.min_temporal_distance,
+                "peak_threshold": self.peak_threshold,
+                "max_side": self.max_side,
+                "fps": self.fps,
+                "jpeg_quality": self.jpeg_quality,
+            }
         return {
             "extractor": self.extractor,
             "extractor_version": self.extractor_version,
@@ -344,6 +430,16 @@ class ExtractionConfig:
             extractor_version=data.get("extractor_version", "2.0"),
             scorer=data.get("scorer", "frame_difference"),
             frame_reader=data.get("frame_reader", "ffmpeg"),
+            detector=data.get("detector", "omnishotcut"),
+            sampler=data.get("sampler", "adaptive_v1"),
+            short_shot_seconds=float(data.get("short_shot_seconds", 5.0)),
+            long_shot_seconds=float(data.get("long_shot_seconds", 60.0)),
+            uniform_interval_seconds=float(data.get("uniform_interval_seconds", 10.0)),
+            omnishotcut_mode=data.get("omnishotcut_mode", "clean_shot"),
+            omnishotcut_overlap=int(data.get("omnishotcut_overlap", 20)),
+            device=data.get("device", "auto"),
+            checkpoint=data.get("checkpoint"),
+            omnishotcut_filename=data.get("omnishotcut_filename", DEFAULT_OMNISHOTCUT_FILENAME),
             min_temporal_distance=int(data.get("min_temporal_distance", 30)),
             peak_threshold=float(data.get("peak_threshold", 8.0)),
             target_keyframes_per_video=data.get("target_keyframes_per_video"),
@@ -432,6 +528,8 @@ class ExtractionManifest:
         - extractor: extractor implementation name.
         - extractor_version: extractor version.
         - scorer / frame_reader: scoring and decoding method names.
+        - detector / sampler: shot-detector and sampler names (additive;
+          ``"n/a"`` for the ``dake`` extractor, which uses neither).
         - parameters: the effective :class:`ExtractionConfig` dict.
         - config_hash: sha256 identity of the effective configuration.
         - source_videos: resolved ``videos.json`` path.
@@ -452,6 +550,8 @@ class ExtractionManifest:
     num_keyframes: int
     statistics: ExtractionStatistics
     created_at: str
+    detector: str = "n/a"
+    sampler: str = "n/a"
 
     def __post_init__(self) -> None:
         _require(
@@ -462,6 +562,8 @@ class ExtractionManifest:
         _require(isinstance(self.extractor_version, str) and self.extractor_version != "", "extractor_version required")
         _require(isinstance(self.scorer, str) and self.scorer != "", "scorer required")
         _require(isinstance(self.frame_reader, str) and self.frame_reader != "", "frame_reader required")
+        _require(isinstance(self.detector, str) and self.detector != "", "detector required")
+        _require(isinstance(self.sampler, str) and self.sampler != "", "sampler required")
         _require(isinstance(self.parameters, dict), "parameters must be a dict")
         _require(isinstance(self.config_hash, str) and self.config_hash != "", "config_hash required")
         _require(isinstance(self.source_videos, str) and self.source_videos != "", "source_videos required")
@@ -477,6 +579,8 @@ class ExtractionManifest:
             "extractor_version": self.extractor_version,
             "scorer": self.scorer,
             "frame_reader": self.frame_reader,
+            "detector": self.detector,
+            "sampler": self.sampler,
             "parameters": self.parameters,
             "config_hash": self.config_hash,
             "source_videos": self.source_videos,
@@ -495,6 +599,8 @@ class ExtractionManifest:
             extractor_version=data["extractor_version"],
             scorer=data["scorer"],
             frame_reader=data["frame_reader"],
+            detector=data.get("detector", "n/a"),
+            sampler=data.get("sampler", "n/a"),
             parameters=data["parameters"],
             config_hash=data["config_hash"],
             source_videos=data["source_videos"],
@@ -711,13 +817,64 @@ def _merge_staged_into_final(
 # ---------------------------------------------------------------- pipeline
 
 
+@runtime_checkable
+class KeyframeExtractorProtocol(Protocol):
+    """Minimal extractor contract the pipeline loop relies on.
+
+    Attributes:
+        - extractor_name: extractor implementation name.
+        - extractor_version: extractor version string.
+
+    Methods:
+        - ``extract(video_path)``: return the video's :class:`Keyframe`
+          records.
+        - ``last_frames_scanned``: number of source frames scanned by the most
+          recent ``extract`` call.
+    """
+
+    extractor_name: str
+    extractor_version: str
+
+    def extract(self, video_path: Path | str) -> list[Keyframe]:
+        """Extract keyframes from a video and return the records."""
+        ...
+
+    @property
+    def last_frames_scanned(self) -> int:
+        """Return the number of source frames scanned by the last extract."""
+        ...
+
+
 def _build_extractor(
     video_id: str,
     config: ExtractionConfig,
-) -> DakeKeyframeExtractor:
-    """Create the extractor for one video from the effective configuration."""
+    *,
+    shot_detector: object | None = None,
+) -> KeyframeExtractorProtocol:
+    """Create the extractor for one video from the effective configuration.
+
+    The ``omnishotcut_adaptive`` extractor requires a shared ``shot_detector``
+    (the OmniShotCut model is loaded once per run and reused across videos).
+    """
     frame_reader = create_frame_reader(config.frame_reader, max_side=config.max_side, fps=config.fps)
     scorer = create_scorer(config.scorer, quality=config.jpeg_quality)
+    if config.extractor == "omnishotcut_adaptive":
+        if shot_detector is None:
+            raise ValueError("omnishotcut_adaptive requires a shared shot_detector")
+        from aic2026.omnishotcut_extractor import OmniShotCutAdaptiveExtractor
+
+        return OmniShotCutAdaptiveExtractor(
+            video_id,
+            shot_detector,  # type: ignore[arg-type]
+            frame_reader,
+            scorer=scorer,
+            short_shot_seconds=config.short_shot_seconds,
+            long_shot_seconds=config.long_shot_seconds,
+            uniform_interval_seconds=config.uniform_interval_seconds,
+            min_temporal_distance=config.min_temporal_distance,
+            peak_threshold=config.peak_threshold,
+            fps=config.fps,
+        )
     return DakeKeyframeExtractor(
         video_id,
         frame_reader,
@@ -842,12 +999,26 @@ def extract_keyframes(
     if progress is not None:
         progress.set_total(len(videos.videos), len(completed_ids))
 
+    # The shot detector is built once per run and shared across videos so the
+    # (heavy) OmniShotCut model is loaded a single time. Its construction is
+    # lazy: no checkpoint is downloaded until the first video is detected.
+    shot_detector = None
+    if config.extractor == "omnishotcut_adaptive":
+        shot_detector = create_shot_detector(
+            config.detector,
+            checkpoint=config.checkpoint,
+            filename=config.omnishotcut_filename,
+            mode=config.omnishotcut_mode,
+            overlap=config.omnishotcut_overlap,
+            device=config.device,
+        )
+
     completed_video = 0
     for entry in videos.videos:
         if entry.video_id in completed_ids:
             completed_video += 1
             continue
-        extractor = _build_extractor(entry.video_id, config)
+        extractor = _build_extractor(entry.video_id, config, shot_detector=shot_detector)
         keyframes = extractor.extract(entry.path)
         frames_scanned[entry.video_id] = extractor.last_frames_scanned
         write_video_ndjson(staging / f"{entry.video_id}.ndjson", keyframes)
@@ -890,6 +1061,8 @@ def extract_keyframes(
         extractor_version=config.extractor_version,
         scorer=config.scorer,
         frame_reader=config.frame_reader,
+        detector=config.detector if config.extractor == "omnishotcut_adaptive" else "n/a",
+        sampler=config.sampler if config.extractor == "omnishotcut_adaptive" else "n/a",
         parameters=config.to_dict(),
         config_hash=config_hash,
         source_videos=str(videos_path.resolve()),

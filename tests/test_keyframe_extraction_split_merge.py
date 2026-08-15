@@ -22,6 +22,7 @@ from aic2026.keyframe_extraction import (
     VIDEOS_MANIFEST_FILENAME,
     ExtractionConfig,
     ExtractionError,
+    ExtractionManifest,
     VideoEntry,
     VideoManifest,
     extract_keyframes,
@@ -46,6 +47,19 @@ def _make_videos(tmp_path: Path, count: int = 4, frames: int = 200) -> list[Vide
         path = write_synthetic_video(
             tmp_path / f"{vid}.json",
             _scene_values(frames, scene_length=10),
+        )
+        entries.append(VideoEntry(video_id=vid, path=str(path), num_frames=frames))
+    return entries
+
+
+def _make_adaptive_videos(tmp_path: Path, count: int = 4, frames: int = 500) -> list[VideoEntry]:
+    entries: list[VideoEntry] = []
+    for i in range(count):
+        vid = f"L21_V{i + 1:03d}"
+        path = write_synthetic_video(
+            tmp_path / f"{vid}.json",
+            _scene_values(frames, scene_length=10),
+            shots=[(0, frames - 1)],
         )
         entries.append(VideoEntry(video_id=vid, path=str(path), num_frames=frames))
     return entries
@@ -132,6 +146,67 @@ class TestExtractionConfig:
             _config(anchor_interval_seconds=0.0)
         with pytest.raises(ValueError):
             _config(anchor_interval_seconds=-1.0)
+
+
+# ---------------------------------------------------- adaptive extractor config
+
+
+def _adaptive_config(**overrides: object) -> ExtractionConfig:
+    kwargs: dict[str, object] = {
+        "extractor": "omnishotcut_adaptive",
+        "frame_reader": "synthetic",
+        "detector": "synthetic",
+        "sampler": "adaptive_v1",
+    }
+    kwargs.update(overrides)
+    return ExtractionConfig(**kwargs)
+
+
+class TestAdaptiveExtractionConfig:
+    def test_rejects_dake_budget_flags(self) -> None:
+        with pytest.raises(ValueError):
+            _adaptive_config(target_keyframes_per_video=5)
+        with pytest.raises(ValueError):
+            _adaptive_config(sampling_ratio=0.1)
+
+    def test_rejects_invalid_adaptive_fields(self) -> None:
+        with pytest.raises(ValueError):
+            _adaptive_config(detector="nope")
+        with pytest.raises(ValueError):
+            _adaptive_config(sampler="nope")
+        with pytest.raises(ValueError):
+            _adaptive_config(short_shot_seconds=0.0)
+        with pytest.raises(ValueError):
+            _adaptive_config(long_shot_seconds=2.0, short_shot_seconds=5.0)
+        with pytest.raises(ValueError):
+            _adaptive_config(uniform_interval_seconds=0.0)
+        with pytest.raises(ValueError):
+            _adaptive_config(omnishotcut_mode="bogus")
+        with pytest.raises(ValueError):
+            _adaptive_config(omnishotcut_overlap=-1)
+        with pytest.raises(ValueError):
+            _adaptive_config(device="tpu")
+
+    def test_round_trip(self) -> None:
+        cfg = _adaptive_config(
+            short_shot_seconds=3.0,
+            long_shot_seconds=120.0,
+            uniform_interval_seconds=5.0,
+            omnishotcut_mode="default",
+            omnishotcut_overlap=10,
+            device="cpu",
+            min_temporal_distance=15,
+            peak_threshold=6.0,
+        )
+        restored = ExtractionConfig.from_dict(cfg.to_dict())
+        assert restored == cfg
+        assert restored.config_hash() == cfg.config_hash()
+
+    def test_hash_changes_with_adaptive_fields(self) -> None:
+        base = _adaptive_config().config_hash()
+        assert _adaptive_config(short_shot_seconds=7.0).config_hash() != base
+        assert _adaptive_config(detector="omnishotcut").config_hash() != base
+        assert _adaptive_config(sampler="adaptive_v1").config_hash() == base
 
 
 # ---------------------------------------------------------------- video manifest
@@ -533,6 +608,43 @@ class TestMergeShards:
         assert (tmp_path / "ma" / FRAMES_FILENAME).read_text() == (tmp_path / "mb" / FRAMES_FILENAME).read_text()
         assert merged_a.num_keyframes == merged_b.num_keyframes
 
+    def test_merge_adaptive_manifest_carries_detector_sampler(self, tmp_path: Path) -> None:
+        videos = _make_adaptive_videos(tmp_path)
+        split_dir = tmp_path / "splits"
+        split_video_manifest(_save(tmp_path, videos), 2, split_dir)
+        shards = [tmp_path / f"s{i}" for i in range(2)]
+        for i, shard in enumerate(shards):
+            extract_keyframes(
+                split_dir / worker_dir_name(i) / VIDEOS_MANIFEST_FILENAME,
+                shard,
+                _adaptive_config(),
+            )
+        merged = tmp_path / "merged"
+        manifest = merge_shards(shards, merged)
+        assert manifest.extractor == "omnishotcut_adaptive"
+        assert manifest.detector == "synthetic"
+        assert manifest.sampler == "adaptive_v1"
+
+    def test_merge_adaptive_detector_mismatch_rejected(self, tmp_path: Path) -> None:
+        videos = _make_adaptive_videos(tmp_path)
+        split_dir = tmp_path / "splits"
+        split_video_manifest(_save(tmp_path, videos), 2, split_dir)
+        shard_a = tmp_path / "a"
+        shard_b = tmp_path / "b"
+        for shard in (shard_a, shard_b):
+            extract_keyframes(
+                split_dir / worker_dir_name(0) / VIDEOS_MANIFEST_FILENAME,
+                shard,
+                _adaptive_config(),
+            )
+        # Simulate a shard produced with a different shot detector.
+        manifest_path = shard_b / MANIFEST_FILENAME
+        payload = json.loads(manifest_path.read_text())
+        payload["detector"] = "omnishotcut"
+        manifest_path.write_text(json.dumps(payload, indent=2) + "\n")
+        with pytest.raises(MergeError):
+            merge_shards([shard_a, shard_b], tmp_path / "merged")
+
 
 # ---------------------------------------------------------------------- CLIs
 
@@ -560,6 +672,10 @@ class TestExtractCli:
         assert result.returncode == 0
         assert "--videos" in result.stdout
         assert "--sampling-ratio" in result.stdout
+        assert "--extractor" in result.stdout
+        assert "--detector" in result.stdout
+        assert "--sampler" in result.stdout
+        assert "--omnishotcut-checkpoint" in result.stdout
 
     def test_missing_args_exits_2(self) -> None:
         result = subprocess.run(
@@ -594,6 +710,52 @@ class TestExtractCli:
         assert result.returncode == 0, result.stderr
         assert "Extraction complete: 24 keyframes" in result.stdout
         assert (out / FRAMES_FILENAME).is_file()
+
+    def test_run_end_to_end_adaptive(self, tmp_path: Path) -> None:
+        video_dir = tmp_path / "videos"
+        video_dir.mkdir()
+        entries: list[VideoEntry] = []
+        for i in range(2):
+            vid = f"L21_V{i + 1:03d}"
+            path = write_synthetic_video(
+                video_dir / f"{vid}.json",
+                _scene_values(500, scene_length=10),
+                shots=[(0, 499)],
+            )
+            entries.append(VideoEntry(video_id=vid, path=str(path), num_frames=500))
+        videos_path = video_dir / "videos.json"
+        save_video_manifest(videos_path, _manifest(entries))
+        out = tmp_path / "shard"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_extract_script()),
+                "--videos",
+                str(videos_path),
+                "--output-dir",
+                str(out),
+                "--extractor",
+                "omnishotcut_adaptive",
+                "--detector",
+                "synthetic",
+                "--sampler",
+                "adaptive_v1",
+                "--frame-reader",
+                "synthetic",
+                "--progress",
+                "off",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Extraction complete:" in result.stdout
+        assert (out / FRAMES_FILENAME).is_file()
+        manifest = ExtractionManifest.from_dict(json.loads((out / MANIFEST_FILENAME).read_text()))
+        assert manifest.extractor == "omnishotcut_adaptive"
+        assert manifest.detector == "synthetic"
+        assert manifest.sampler == "adaptive_v1"
 
     def test_config_error_exits_1(self, videos_file: Path, tmp_path: Path) -> None:
         result = subprocess.run(

@@ -31,6 +31,8 @@ from aic2026.keyframe_extractor import (
     write_synthetic_video,
 )
 
+from aic2026.keyframe_extractor import _downsample_anchors
+
 
 def make_video(
     tmp_path: Path,
@@ -370,6 +372,60 @@ class TestSelectKeyframes:
         assert len(indices) <= 5
         assert {0, 20, 40, 59}.issubset(indices)
 
+    def test_anchors_over_target_downsampled(self) -> None:
+        # 1000 frames, anchor every 10 -> 101 anchors; target 20 is a hard cap.
+        scores = np.zeros(1000)
+        indices = select_keyframes(
+            scores,
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=20,
+            anchor_interval_frames=10,
+        )
+        assert len(indices) == 20
+        assert indices[0] == 0
+        assert indices[-1] == 999
+
+    def test_anchors_over_target_hard_cap(self) -> None:
+        # anchors alone exceed target: no peaks are added, total == target.
+        scores = np.zeros(500)
+        indices = select_keyframes(
+            scores,
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=10,
+            anchor_interval_frames=5,
+        )
+        assert len(indices) == 10
+        assert indices[0] == 0
+        assert indices[-1] == 499
+
+    def test_anchors_over_target_deterministic(self) -> None:
+        scores = np.zeros(3000)
+        kwargs = dict(
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=25,
+            anchor_interval_frames=7,
+        )
+        a = select_keyframes(scores, **kwargs)
+        b = select_keyframes(scores, **kwargs)
+        assert a == b
+        assert len(a) == 25
+        assert a[0] == 0 and a[-1] == 2999
+
+    def test_anchors_exactly_target_no_peaks(self) -> None:
+        scores = np.zeros(30)
+        indices = select_keyframes(
+            scores,
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=4,
+            anchor_interval_frames=10,
+        )
+        # anchors are 0, 10, 20, 29 = exactly 4 == target -> no peaks added.
+        assert indices == [0, 10, 20, 29]
+
 
 class TestComputeAnchorFrames:
     def test_first_and_last_always(self) -> None:
@@ -389,6 +445,31 @@ class TestComputeAnchorFrames:
         for bad in (0, -3, 1.5, True):
             with pytest.raises(ValueError):
                 compute_anchor_frames(10, interval_frames=bad)
+
+    def test_downsample_preserves_endpoints(self) -> None:
+        anchors = compute_anchor_frames(1000, interval_frames=10)
+        kept = _downsample_anchors(anchors, 10)
+        assert kept[0] == 0
+        assert kept[-1] == 999
+        assert len(kept) == 10
+
+    def test_downsample_target_one_keeps_first(self) -> None:
+        anchors = compute_anchor_frames(100, interval_frames=5)
+        assert _downsample_anchors(anchors, 1) == [0]
+
+    def test_downsample_target_two_keeps_endpoints(self) -> None:
+        anchors = compute_anchor_frames(100, interval_frames=5)
+        assert _downsample_anchors(anchors, 2) == [0, 99]
+
+    def test_downsample_invalid_target_rejected(self) -> None:
+        anchors = compute_anchor_frames(100, interval_frames=5)
+        for bad in (0, -1, 1.5):
+            with pytest.raises(ValueError):
+                _downsample_anchors(anchors, bad)
+
+    def test_downsample_requires_over_budget_input(self) -> None:
+        with pytest.raises(ValueError):
+            _downsample_anchors([0, 99], 5)
 
 
 # ------------------------------------------------------------------ extractor
@@ -464,6 +545,42 @@ class TestDakeKeyframeExtractor:
             anchor_interval_seconds=1.0,
         ).extract(path)
         assert [k.frame_index for k in keyframes] == [0, 25, 50, 59]
+
+    def test_target_is_hard_cap_with_anchors(self, tmp_path: Path) -> None:
+        # 1000 frames at 25 fps, anchor every 0.1s -> every 2nd frame
+        # (~500 anchors); target 15 must be a hard total cap. Frame 0 and the
+        # last frame are preserved.
+        path = make_video(tmp_path, "v", _scene_values(1000, scene_length=20), fps=25.0)
+        extractor = DakeKeyframeExtractor(
+            "L21_V001",
+            SyntheticFrameReader(),
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=15,
+            anchor_interval_seconds=0.1,
+        )
+        keyframes = extractor.extract(path)
+        frames = [k.frame_index for k in keyframes]
+        assert len(frames) <= 15
+        assert frames[0] == 0
+        assert frames[-1] == 999
+        assert frames == sorted(frames)
+
+    def test_target_hard_cap_deterministic(self, tmp_path: Path) -> None:
+        path = make_video(tmp_path, "v", _scene_values(800, scene_length=15), fps=25.0)
+        extractor = DakeKeyframeExtractor(
+            "L21_V001",
+            SyntheticFrameReader(),
+            min_temporal_distance=1,
+            peak_threshold=0.0,
+            target=12,
+            anchor_interval_seconds=0.2,
+        )
+        a = [k.frame_index for k in extractor.extract(path)]
+        b = [k.frame_index for k in extractor.extract(path)]
+        assert a == b
+        assert len(a) <= 12
+        assert a[0] == 0 and a[-1] == 799
 
     def test_invalid_anchor_interval_rejected(self) -> None:
         with pytest.raises(ValueError):

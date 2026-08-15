@@ -49,18 +49,84 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "manifest.json, and checkpoint.json"
         ),
     )
-    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument(
         "--target-keyframes-per-video",
         type=int,
         default=None,
-        help="maximum keyframes selected per video (mutually exclusive with --sampling-ratio)",
+        help="hard cap on total keyframes per video, including anchors (mutually exclusive with --sampling-ratio; dake extractor only)",
     )
     target_group.add_argument(
         "--sampling-ratio",
         type=float,
         default=None,
-        help="fraction of frames selected as keyframes, e.g. 0.1 (mutually exclusive with --target-keyframes-per-video)",
+        help="fraction of frames selected as keyframes, e.g. 0.1 (mutually exclusive with --target-keyframes-per-video; dake extractor only)",
+    )
+    parser.add_argument(
+        "--extractor",
+        choices=("dake", "omnishotcut_adaptive"),
+        default="dake",
+        help="keyframe extractor: dake (fixed-budget, DAKE-inspired) or omnishotcut_adaptive (OmniShotCut shots + adaptive sampling) (default: dake)",
+    )
+    parser.add_argument(
+        "--detector",
+        choices=("omnishotcut", "synthetic"),
+        default="omnishotcut",
+        help="shot detector used by the omnishotcut_adaptive extractor (default: omnishotcut)",
+    )
+    parser.add_argument(
+        "--sampler",
+        choices=("adaptive_v1",),
+        default="adaptive_v1",
+        help="per-shot sampler used by the omnishotcut_adaptive extractor (default: adaptive_v1)",
+    )
+    parser.add_argument(
+        "--short-shot-seconds",
+        type=float,
+        default=5.0,
+        help="shots shorter than this (seconds) get only their middle frame (default: 5.0)",
+    )
+    parser.add_argument(
+        "--long-shot-seconds",
+        type=float,
+        default=60.0,
+        help="shots at least this long (seconds) also get high-change frames (default: 60.0)",
+    )
+    parser.add_argument(
+        "--uniform-interval-seconds",
+        type=float,
+        default=10.0,
+        help="uniform keyframe spacing (seconds) for non-short shots (default: 10.0)",
+    )
+    parser.add_argument(
+        "--omnishotcut-mode",
+        choices=("clean_shot", "default"),
+        default="clean_shot",
+        help="OmniShotCut prediction mode (default: clean_shot)",
+    )
+    parser.add_argument(
+        "--omnishotcut-overlap",
+        type=int,
+        default=20,
+        help="OmniShotCut overlap frames between inference windows (default: 20)",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "mps", "cuda"),
+        default="auto",
+        help="device for the OmniShotCut model (default: auto)",
+    )
+    parser.add_argument(
+        "--omnishotcut-checkpoint",
+        type=str,
+        default=None,
+        help="OmniShotCut checkpoint: local path or HuggingFace repo id (default: uva-cv-lab/OmniShotCut)",
+    )
+    parser.add_argument(
+        "--omnishotcut-filename",
+        type=str,
+        default="OmniShotCut_ckpt.pth",
+        help="OmniShotCut checkpoint filename inside a HuggingFace repo id (default: OmniShotCut_ckpt.pth)",
     )
     parser.add_argument(
         "--frame-reader",
@@ -155,8 +221,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     config = ExtractionConfig(
+        extractor=args.extractor,
         scorer=args.scorer,
         frame_reader=args.frame_reader,
+        detector=args.detector,
+        sampler=args.sampler,
+        short_shot_seconds=args.short_shot_seconds,
+        long_shot_seconds=args.long_shot_seconds,
+        uniform_interval_seconds=args.uniform_interval_seconds,
+        omnishotcut_mode=args.omnishotcut_mode,
+        omnishotcut_overlap=args.omnishotcut_overlap,
+        device=args.device,
+        checkpoint=args.omnishotcut_checkpoint,
+        omnishotcut_filename=args.omnishotcut_filename,
         min_temporal_distance=args.min_temporal_distance,
         peak_threshold=args.peak_threshold,
         target_keyframes_per_video=args.target_keyframes_per_video,

@@ -96,6 +96,8 @@ class MergeManifest:
           (``MERGE_MANIFEST_SCHEMA_VERSION``).
         - extractor / extractor_version / scorer / frame_reader: shared
           extraction identity across all merged shards.
+        - detector / sampler: shared shot-detector and sampler names
+          (additive; ``"n/a"`` for the ``dake`` extractor).
         - parameters: shared extraction configuration dict.
         - config_hash: sha256 identity of the shared configuration.
         - num_videos / num_keyframes: merged artifact counts.
@@ -114,6 +116,8 @@ class MergeManifest:
     num_keyframes: int
     source_shards: tuple[str, ...]
     created_at: str
+    detector: str = "n/a"
+    sampler: str = "n/a"
 
     def __post_init__(self) -> None:
         _require(
@@ -124,6 +128,8 @@ class MergeManifest:
         _require(isinstance(self.extractor_version, str) and self.extractor_version != "", "extractor_version required")
         _require(isinstance(self.scorer, str) and self.scorer != "", "scorer required")
         _require(isinstance(self.frame_reader, str) and self.frame_reader != "", "frame_reader required")
+        _require(isinstance(self.detector, str) and self.detector != "", "detector required")
+        _require(isinstance(self.sampler, str) and self.sampler != "", "sampler required")
         _require(isinstance(self.parameters, dict), "parameters must be a dict")
         _require(isinstance(self.config_hash, str) and self.config_hash != "", "config_hash required")
         _require(isinstance(self.num_videos, int) and self.num_videos >= 0, "num_videos must be >= 0")
@@ -139,6 +145,8 @@ class MergeManifest:
             "extractor_version": self.extractor_version,
             "scorer": self.scorer,
             "frame_reader": self.frame_reader,
+            "detector": self.detector,
+            "sampler": self.sampler,
             "parameters": self.parameters,
             "config_hash": self.config_hash,
             "num_videos": self.num_videos,
@@ -156,6 +164,8 @@ class MergeManifest:
             extractor_version=data["extractor_version"],
             scorer=data["scorer"],
             frame_reader=data["frame_reader"],
+            detector=data.get("detector", "n/a"),
+            sampler=data.get("sampler", "n/a"),
             parameters=data["parameters"],
             config_hash=data["config_hash"],
             num_videos=int(data["num_videos"]),
@@ -185,6 +195,8 @@ def _load_shard(
         ("extractor_version", manifest.extractor_version, reference.extractor_version),
         ("scorer", manifest.scorer, reference.scorer),
         ("frame_reader", manifest.frame_reader, reference.frame_reader),
+        ("detector", manifest.detector, reference.detector),
+        ("sampler", manifest.sampler, reference.sampler),
         ("config_hash", manifest.config_hash, reference.config_hash),
     ):
         if value != expected:
@@ -323,6 +335,8 @@ def merge_shards(
         extractor_version=reference.extractor_version,
         scorer=reference.scorer,
         frame_reader=reference.frame_reader,
+        detector=reference.detector,
+        sampler=reference.sampler,
         parameters=reference.parameters,
         config_hash=reference.config_hash,
         num_videos=total_videos,

@@ -976,7 +976,7 @@ scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section
 scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
 scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
 scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 20).
-scripts/extract_keyframes.py - resumable DAKE-inspired keyframe extraction (Section 20).
+scripts/extract_keyframes.py - resumable keyframe extraction: DAKE-inspired fixed-budget or OmniShotCut adaptive (Section 20).
 scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 20).
 scripts/build_video_manifest.py - build the canonical videos.json inventory (Section 19).
 scripts/create_experiment_manifest.py - record experiment metadata (Section 21).
@@ -1676,11 +1676,19 @@ The first and last frames of every video are always kept as anchors. With
 `--anchor-interval-seconds`, additional uniform anchors are added every N
 seconds (rounded to whole frames using the video fps) between them. Candidate
 peaks must also stay at least `--min-temporal-distance` frames away from
-anchors, and when `--target-keyframes-per-video` or `--sampling-ratio` is
-given the total (anchors + peaks) does not exceed the target (anchors alone
-are always kept even if they reach the target). This guarantees content
-coverage across long videos without suppressing peaks inside uniform
-segments.
+anchors.
+
+`--target-keyframes-per-video` is a **hard cap on the total number of
+keyframes per video, including anchors**. If the anchors alone would meet or
+exceed the target, they are deterministically downsampled to the target
+(always preserving frame 0 and the last frame) and no peaks are added;
+otherwise the best peaks are kept so the total never exceeds the target. The
+result always satisfies `len(selected) <= target` and is deterministic for a
+given input. This guarantees content coverage across long videos while keeping
+the per-video keyframe budget bounded.
+
+`--sampling-ratio` behaves the same way: it derives a per-video target from
+the frame count, and that target is then applied as the same hard total cap.
 
 The pipeline (`aic2026.keyframe_extraction.extract_keyframes`) writes:
 
@@ -1729,6 +1737,56 @@ rejects any keyframe or video appearing in more than one shard, and rebuilds
 `map-keyframes/*.csv` deterministically from the merged records so the maps
 are always consistent with `frames.ndjson`.
 
+### Adaptive extractor (OmniShotCut shots + per-shot sampling)
+
+The DAKE extractor above applies one fixed budget per video. As an
+alternative, the pipeline supports `--extractor omnishotcut_adaptive`, which
+detects shots with the OmniShotCut model and samples keyframes per shot:
+
+```bash
+python scripts/extract_keyframes.py \
+  --videos data/keyframe-splits/worker_000/videos.json \
+  --output-dir data/keyframes/shard_000 \
+  --extractor omnishotcut_adaptive \
+  --detector omnishotcut \
+  --sampler adaptive_v1 \
+  --frame-reader ffmpeg \
+  --progress auto
+```
+
+For `omnishotcut_adaptive`, `--target-keyframes-per-video` and
+`--sampling-ratio` are not allowed (the DAKE budget flags apply only to the
+`dake` extractor). The output artifact is byte-compatible with the DAKE one
+(`frames.ndjson`, `map-keyframes/*.csv`, `manifest.json`), so downstream
+embed/merge/index stages are unchanged.
+
+The adaptive pipeline is split into two pluggable stages:
+
+- **Shot detection** (`aic2026.shot_detection`): the `ShotDetector` protocol
+  returns inclusive `Shot(start_frame, end_frame)` ranges for a video.
+  - `--detector omnishotcut`: the OmniShotCut model (default). The checkpoint
+    (~164MB) is downloaded from HuggingFace on first use, and the model is
+    loaded once per run and reused across videos. `--device` selects
+    `auto|cpu|mps|cuda`; `--omnishotcut-mode clean_shot|default` and
+    `--omnishotcut-overlap` (default 20) control inference.
+  - `--detector synthetic`: reads a deterministic JSON descriptor (used by
+    tests; no model).
+- **Per-shot sampling** (`aic2026.keyframe_sampling`): the `Sampler` protocol
+  maps one shot to a list of frame indices.
+  - `--sampler adaptive_v1` (default): shots shorter than
+    `--short-shot-seconds` (default 5s) keep only their middle frame; shots up
+    to `--long-shot-seconds` (default 60s) add a uniform sample every
+    `--uniform-interval-seconds` (default 10s); longer shots additionally add
+    high-change frames (via the same `candidate_peaks`/`temporal_suppression`
+    machinery as DAKE, using `--min-temporal-distance` and `--peak-threshold`).
+
+Change scores for the long-shot high-change path are computed only when at
+least one shot is "long", reusing the same `FrameReader`/`ChangeScorer`
+components as DAKE. The detector, sampler, extractor name/version, and all
+effective parameters are recorded in `manifest.json`, and `config_hash` covers
+them so a resume or merge across differing adaptive configurations is
+rejected.
+
 ### Extensibility
 
 The extractor is deliberately modular (`aic2026.keyframe_extractor`): the
@@ -1740,6 +1798,14 @@ bump `extractor_version` so `config_hash` changes and old artifacts are not
 confused with new ones. The `jpeg_size` scorer and `anchor_interval_seconds`
 option are V2 additions; `config_hash` covers both, so a resume with a
 different scorer, `jpeg_quality`, or anchor interval is rejected.
+
+The adaptive extractor (`--extractor omnishotcut_adaptive`) adds two further
+pluggable stages — shot detection (`aic2026.shot_detection`) and per-shot
+sampling (`aic2026.keyframe_sampling`) — while keeping the canonical artifact
+contract identical, so downstream stages never change. Add a new detector or
+sampler by implementing its protocol and registering it in the
+`SHOT_DETECTOR_NAMES` / `SAMPLER_NAMES` tuples; `config_hash` covers both so a
+resume or merge across different detectors/samplers is rejected.
 
 ## 21. Experiment tracking
 
