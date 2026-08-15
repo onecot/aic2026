@@ -1,0 +1,880 @@
+{
+  "schema_version": "1.0",
+  "videos": [
+    {
+      "video_id": "L25_V084",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V084.mp4",
+      "num_frames": 65616
+    },
+    {
+      "video_id": "L25_V052",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V052.mp4",
+      "num_frames": 56756
+    },
+    {
+      "video_id": "L25_V086",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V086.mp4",
+      "num_frames": 54097
+    },
+    {
+      "video_id": "L25_V033",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V033.mp4",
+      "num_frames": 48230
+    },
+    {
+      "video_id": "L25_V039",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V039.mp4",
+      "num_frames": 45947
+    },
+    {
+      "video_id": "L25_V058",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V058.mp4",
+      "num_frames": 44987
+    },
+    {
+      "video_id": "L25_V032",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V032.mp4",
+      "num_frames": 41528
+    },
+    {
+      "video_id": "L25_V050",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V050.mp4",
+      "num_frames": 40866
+    },
+    {
+      "video_id": "L25_V016",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V016.mp4",
+      "num_frames": 39809
+    },
+    {
+      "video_id": "L25_V030",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V030.mp4",
+      "num_frames": 38560
+    },
+    {
+      "video_id": "L25_V031",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V031.mp4",
+      "num_frames": 37788
+    },
+    {
+      "video_id": "L22_V016",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V016.mp4",
+      "num_frames": 35920
+    },
+    {
+      "video_id": "L25_V063",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V063.mp4",
+      "num_frames": 35374
+    },
+    {
+      "video_id": "L25_V040",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V040.mp4",
+      "num_frames": 34871
+    },
+    {
+      "video_id": "L21_V029",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L21_V029.mp4",
+      "num_frames": 34689
+    },
+    {
+      "video_id": "L25_V029",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V029.mp4",
+      "num_frames": 33871
+    },
+    {
+      "video_id": "L22_V028",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V028.mp4",
+      "num_frames": 33445
+    },
+    {
+      "video_id": "L22_V027",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V027.mp4",
+      "num_frames": 33200
+    },
+    {
+      "video_id": "L22_V024",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V024.mp4",
+      "num_frames": 31705
+    },
+    {
+      "video_id": "L28_V001",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L28_V001.mp4",
+      "num_frames": 31676
+    },
+    {
+      "video_id": "L21_V006",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L21_V006.mp4",
+      "num_frames": 31064
+    },
+    {
+      "video_id": "L25_V064",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V064.mp4",
+      "num_frames": 30363
+    },
+    {
+      "video_id": "L22_V007",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V007.mp4",
+      "num_frames": 30032
+    },
+    {
+      "video_id": "L21_V025",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L21_V025.mp4",
+      "num_frames": 29495
+    },
+    {
+      "video_id": "L28_V003",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L28_V003.mp4",
+      "num_frames": 28778
+    },
+    {
+      "video_id": "L25_V065",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V065.mp4",
+      "num_frames": 28622
+    },
+    {
+      "video_id": "L28_V006",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L28_V006.mp4",
+      "num_frames": 28432
+    },
+    {
+      "video_id": "L28_V021",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L28_V021.mp4",
+      "num_frames": 28254
+    },
+    {
+      "video_id": "L28_V024",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L28_V024.mp4",
+      "num_frames": 28150
+    },
+    {
+      "video_id": "L28_V008",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L28_V008.mp4",
+      "num_frames": 27961
+    },
+    {
+      "video_id": "L22_V008",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V008.mp4",
+      "num_frames": 27393
+    },
+    {
+      "video_id": "L22_V010",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L22_V010.mp4",
+      "num_frames": 27276
+    },
+    {
+      "video_id": "L29_V023",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L29_V023.mp4",
+      "num_frames": 27057
+    },
+    {
+      "video_id": "L29_V011",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L29_V011.mp4",
+      "num_frames": 26893
+    },
+    {
+      "video_id": "L29_V004",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L29_V004.mp4",
+      "num_frames": 26813
+    },
+    {
+      "video_id": "L29_V003",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L29_V003.mp4",
+      "num_frames": 26176
+    },
+    {
+      "video_id": "L25_V079",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L25_V079.mp4",
+      "num_frames": 26028
+    },
+    {
+      "video_id": "L21_V017",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L21_V017.mp4",
+      "num_frames": 23751
+    },
+    {
+      "video_id": "L24_V004",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V004.mp4",
+      "num_frames": 23406
+    },
+    {
+      "video_id": "L24_V037",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V037.mp4",
+      "num_frames": 19164
+    },
+    {
+      "video_id": "L24_V023",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V023.mp4",
+      "num_frames": 18137
+    },
+    {
+      "video_id": "L24_V002",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V002.mp4",
+      "num_frames": 17573
+    },
+    {
+      "video_id": "L24_V024",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V024.mp4",
+      "num_frames": 16922
+    },
+    {
+      "video_id": "L24_V011",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V011.mp4",
+      "num_frames": 16236
+    },
+    {
+      "video_id": "L27_V008",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L27_V008.mp4",
+      "num_frames": 15037
+    },
+    {
+      "video_id": "L27_V011",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L27_V011.mp4",
+      "num_frames": 14849
+    },
+    {
+      "video_id": "L27_V010",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L27_V010.mp4",
+      "num_frames": 14612
+    },
+    {
+      "video_id": "L24_V007",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V007.mp4",
+      "num_frames": 14260
+    },
+    {
+      "video_id": "L24_V006",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V006.mp4",
+      "num_frames": 14218
+    },
+    {
+      "video_id": "L24_V013",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V013.mp4",
+      "num_frames": 13053
+    },
+    {
+      "video_id": "L23_V012",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L23_V012.mp4",
+      "num_frames": 10425
+    },
+    {
+      "video_id": "L23_V024",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L23_V024.mp4",
+      "num_frames": 9988
+    },
+    {
+      "video_id": "L30_V018",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V018.mp4",
+      "num_frames": 9448
+    },
+    {
+      "video_id": "L26_V039",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V039.mp4",
+      "num_frames": 8964
+    },
+    {
+      "video_id": "L24_V036",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V036.mp4",
+      "num_frames": 8811
+    },
+    {
+      "video_id": "L30_V033",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V033.mp4",
+      "num_frames": 8579
+    },
+    {
+      "video_id": "L26_V453",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V453.mp4",
+      "num_frames": 8426
+    },
+    {
+      "video_id": "L26_V457",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V457.mp4",
+      "num_frames": 8392
+    },
+    {
+      "video_id": "L26_V439",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V439.mp4",
+      "num_frames": 8367
+    },
+    {
+      "video_id": "L26_V146",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V146.mp4",
+      "num_frames": 8322
+    },
+    {
+      "video_id": "L26_V052",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V052.mp4",
+      "num_frames": 8293
+    },
+    {
+      "video_id": "L26_V113",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V113.mp4",
+      "num_frames": 8263
+    },
+    {
+      "video_id": "L26_V124",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V124.mp4",
+      "num_frames": 8256
+    },
+    {
+      "video_id": "L26_V067",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V067.mp4",
+      "num_frames": 8238
+    },
+    {
+      "video_id": "L26_V104",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V104.mp4",
+      "num_frames": 8237
+    },
+    {
+      "video_id": "L26_V057",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V057.mp4",
+      "num_frames": 8229
+    },
+    {
+      "video_id": "L26_V097",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V097.mp4",
+      "num_frames": 8225
+    },
+    {
+      "video_id": "L26_V066",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V066.mp4",
+      "num_frames": 8207
+    },
+    {
+      "video_id": "L26_V102",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V102.mp4",
+      "num_frames": 8204
+    },
+    {
+      "video_id": "L26_V158",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V158.mp4",
+      "num_frames": 8198
+    },
+    {
+      "video_id": "L26_V156",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V156.mp4",
+      "num_frames": 8195
+    },
+    {
+      "video_id": "L26_V135",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V135.mp4",
+      "num_frames": 8184
+    },
+    {
+      "video_id": "L26_V072",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V072.mp4",
+      "num_frames": 8174
+    },
+    {
+      "video_id": "L26_V283",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V283.mp4",
+      "num_frames": 8173
+    },
+    {
+      "video_id": "L26_V288",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V288.mp4",
+      "num_frames": 8169
+    },
+    {
+      "video_id": "L26_V286",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V286.mp4",
+      "num_frames": 8164
+    },
+    {
+      "video_id": "L26_V109",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V109.mp4",
+      "num_frames": 8159
+    },
+    {
+      "video_id": "L26_V125",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V125.mp4",
+      "num_frames": 8155
+    },
+    {
+      "video_id": "L26_V437",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V437.mp4",
+      "num_frames": 8142
+    },
+    {
+      "video_id": "L26_V266",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V266.mp4",
+      "num_frames": 8136
+    },
+    {
+      "video_id": "L26_V269",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V269.mp4",
+      "num_frames": 8131
+    },
+    {
+      "video_id": "L26_V284",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V284.mp4",
+      "num_frames": 8125
+    },
+    {
+      "video_id": "L26_V212",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V212.mp4",
+      "num_frames": 8119
+    },
+    {
+      "video_id": "L26_V316",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V316.mp4",
+      "num_frames": 8113
+    },
+    {
+      "video_id": "L26_V220",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V220.mp4",
+      "num_frames": 8106
+    },
+    {
+      "video_id": "L26_V161",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V161.mp4",
+      "num_frames": 8095
+    },
+    {
+      "video_id": "L26_V101",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V101.mp4",
+      "num_frames": 8091
+    },
+    {
+      "video_id": "L26_V186",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V186.mp4",
+      "num_frames": 8087
+    },
+    {
+      "video_id": "L26_V441",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V441.mp4",
+      "num_frames": 8082
+    },
+    {
+      "video_id": "L26_V225",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V225.mp4",
+      "num_frames": 8074
+    },
+    {
+      "video_id": "L26_V176",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V176.mp4",
+      "num_frames": 8071
+    },
+    {
+      "video_id": "L26_V115",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V115.mp4",
+      "num_frames": 8065
+    },
+    {
+      "video_id": "L26_V185",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V185.mp4",
+      "num_frames": 8052
+    },
+    {
+      "video_id": "L26_V059",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V059.mp4",
+      "num_frames": 8046
+    },
+    {
+      "video_id": "L26_V260",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V260.mp4",
+      "num_frames": 8038
+    },
+    {
+      "video_id": "L26_V173",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V173.mp4",
+      "num_frames": 8035
+    },
+    {
+      "video_id": "L26_V267",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V267.mp4",
+      "num_frames": 8029
+    },
+    {
+      "video_id": "L26_V311",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V311.mp4",
+      "num_frames": 8023
+    },
+    {
+      "video_id": "L26_V175",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V175.mp4",
+      "num_frames": 8008
+    },
+    {
+      "video_id": "L26_V187",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V187.mp4",
+      "num_frames": 8006
+    },
+    {
+      "video_id": "L26_V294",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V294.mp4",
+      "num_frames": 7995
+    },
+    {
+      "video_id": "L26_V211",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V211.mp4",
+      "num_frames": 7993
+    },
+    {
+      "video_id": "L26_V252",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V252.mp4",
+      "num_frames": 7982
+    },
+    {
+      "video_id": "L26_V229",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V229.mp4",
+      "num_frames": 7979
+    },
+    {
+      "video_id": "L26_V205",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V205.mp4",
+      "num_frames": 7973
+    },
+    {
+      "video_id": "L26_V209",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V209.mp4",
+      "num_frames": 7968
+    },
+    {
+      "video_id": "L26_V197",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V197.mp4",
+      "num_frames": 7951
+    },
+    {
+      "video_id": "L26_V249",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V249.mp4",
+      "num_frames": 7943
+    },
+    {
+      "video_id": "L26_V036",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V036.mp4",
+      "num_frames": 7934
+    },
+    {
+      "video_id": "L26_V218",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V218.mp4",
+      "num_frames": 7912
+    },
+    {
+      "video_id": "L26_V207",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V207.mp4",
+      "num_frames": 7904
+    },
+    {
+      "video_id": "L26_V279",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V279.mp4",
+      "num_frames": 7863
+    },
+    {
+      "video_id": "L26_V112",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V112.mp4",
+      "num_frames": 7831
+    },
+    {
+      "video_id": "L26_V255",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V255.mp4",
+      "num_frames": 7810
+    },
+    {
+      "video_id": "L26_V309",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V309.mp4",
+      "num_frames": 7796
+    },
+    {
+      "video_id": "L26_V370",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V370.mp4",
+      "num_frames": 7763
+    },
+    {
+      "video_id": "L26_V196",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V196.mp4",
+      "num_frames": 7760
+    },
+    {
+      "video_id": "L26_V333",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V333.mp4",
+      "num_frames": 7745
+    },
+    {
+      "video_id": "L26_V009",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V009.mp4",
+      "num_frames": 7740
+    },
+    {
+      "video_id": "L26_V359",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V359.mp4",
+      "num_frames": 7739
+    },
+    {
+      "video_id": "L26_V405",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V405.mp4",
+      "num_frames": 7738
+    },
+    {
+      "video_id": "L26_V328",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V328.mp4",
+      "num_frames": 7730
+    },
+    {
+      "video_id": "L26_V340",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V340.mp4",
+      "num_frames": 7727
+    },
+    {
+      "video_id": "L26_V345",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V345.mp4",
+      "num_frames": 7725
+    },
+    {
+      "video_id": "L26_V235",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V235.mp4",
+      "num_frames": 7723
+    },
+    {
+      "video_id": "L26_V496",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V496.mp4",
+      "num_frames": 7723
+    },
+    {
+      "video_id": "L26_V406",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V406.mp4",
+      "num_frames": 7713
+    },
+    {
+      "video_id": "L26_V382",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V382.mp4",
+      "num_frames": 7710
+    },
+    {
+      "video_id": "L26_V422",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V422.mp4",
+      "num_frames": 7707
+    },
+    {
+      "video_id": "L26_V351",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V351.mp4",
+      "num_frames": 7705
+    },
+    {
+      "video_id": "L26_V469",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V469.mp4",
+      "num_frames": 7700
+    },
+    {
+      "video_id": "L26_V367",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V367.mp4",
+      "num_frames": 7698
+    },
+    {
+      "video_id": "L26_V386",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V386.mp4",
+      "num_frames": 7694
+    },
+    {
+      "video_id": "L26_V479",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V479.mp4",
+      "num_frames": 7693
+    },
+    {
+      "video_id": "L26_V391",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V391.mp4",
+      "num_frames": 7686
+    },
+    {
+      "video_id": "L26_V393",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V393.mp4",
+      "num_frames": 7686
+    },
+    {
+      "video_id": "L26_V482",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V482.mp4",
+      "num_frames": 7680
+    },
+    {
+      "video_id": "L26_V348",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V348.mp4",
+      "num_frames": 7673
+    },
+    {
+      "video_id": "L26_V466",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V466.mp4",
+      "num_frames": 7671
+    },
+    {
+      "video_id": "L26_V320",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V320.mp4",
+      "num_frames": 7660
+    },
+    {
+      "video_id": "L26_V494",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V494.mp4",
+      "num_frames": 7659
+    },
+    {
+      "video_id": "L26_V380",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V380.mp4",
+      "num_frames": 7648
+    },
+    {
+      "video_id": "L26_V465",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V465.mp4",
+      "num_frames": 7648
+    },
+    {
+      "video_id": "L26_V080",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V080.mp4",
+      "num_frames": 7615
+    },
+    {
+      "video_id": "L26_V323",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V323.mp4",
+      "num_frames": 7615
+    },
+    {
+      "video_id": "L26_V110",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V110.mp4",
+      "num_frames": 7593
+    },
+    {
+      "video_id": "L26_V463",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V463.mp4",
+      "num_frames": 7573
+    },
+    {
+      "video_id": "L26_V462",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V462.mp4",
+      "num_frames": 7558
+    },
+    {
+      "video_id": "L26_V362",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V362.mp4",
+      "num_frames": 7527
+    },
+    {
+      "video_id": "L26_V423",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V423.mp4",
+      "num_frames": 7518
+    },
+    {
+      "video_id": "L26_V221",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V221.mp4",
+      "num_frames": 7467
+    },
+    {
+      "video_id": "L30_V083",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V083.mp4",
+      "num_frames": 7434
+    },
+    {
+      "video_id": "L26_V001",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V001.mp4",
+      "num_frames": 7396
+    },
+    {
+      "video_id": "L26_V191",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V191.mp4",
+      "num_frames": 7359
+    },
+    {
+      "video_id": "L26_V042",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V042.mp4",
+      "num_frames": 7303
+    },
+    {
+      "video_id": "L26_V461",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L26_V461.mp4",
+      "num_frames": 7291
+    },
+    {
+      "video_id": "L30_V047",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V047.mp4",
+      "num_frames": 7189
+    },
+    {
+      "video_id": "L30_V066",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V066.mp4",
+      "num_frames": 7000
+    },
+    {
+      "video_id": "L30_V015",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V015.mp4",
+      "num_frames": 6788
+    },
+    {
+      "video_id": "L30_V075",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V075.mp4",
+      "num_frames": 6459
+    },
+    {
+      "video_id": "L30_V025",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V025.mp4",
+      "num_frames": 6189
+    },
+    {
+      "video_id": "L30_V028",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V028.mp4",
+      "num_frames": 6123
+    },
+    {
+      "video_id": "L30_V094",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V094.mp4",
+      "num_frames": 5477
+    },
+    {
+      "video_id": "L30_V055",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V055.mp4",
+      "num_frames": 5405
+    },
+    {
+      "video_id": "L30_V077",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V077.mp4",
+      "num_frames": 4964
+    },
+    {
+      "video_id": "L30_V086",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V086.mp4",
+      "num_frames": 4757
+    },
+    {
+      "video_id": "L30_V081",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V081.mp4",
+      "num_frames": 4605
+    },
+    {
+      "video_id": "L30_V002",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V002.mp4",
+      "num_frames": 4117
+    },
+    {
+      "video_id": "L30_V079",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V079.mp4",
+      "num_frames": 4004
+    },
+    {
+      "video_id": "L30_V001",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V001.mp4",
+      "num_frames": 3162
+    },
+    {
+      "video_id": "L30_V042",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V042.mp4",
+      "num_frames": 2785
+    },
+    {
+      "video_id": "L30_V067",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V067.mp4",
+      "num_frames": 2765
+    },
+    {
+      "video_id": "L30_V035",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L30_V035.mp4",
+      "num_frames": 2006
+    },
+    {
+      "video_id": "L24_V040",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V040.mp4",
+      "num_frames": 1132
+    },
+    {
+      "video_id": "L24_V041",
+      "path": "/Users/tan/Documents/PLAYGROUND/aic_2026/aic2026-v2/data/raw/videos/L24_V041.mp4",
+      "num_frames": 1073
+    }
+  ]
+}
