@@ -1960,3 +1960,501 @@ loaded = load_manifest("experiments/siglip-v1/manifest.json")
 Keep one manifest per experiment directory, name it `manifest.json`, and treat
 `experiment_id` as globally unique so results from different models and runs
 can be compared without ambiguity.
+
+## 22. Distributed worker guide: extract keyframes and embed
+
+This section is the end-to-end runbook for **one assigned worker** in the
+distributed keyframe-extraction + embedding workflow. A new team member should
+be able to follow it from start to finish without the coordinator or the
+split/merge machinery. It is documentation only; it does not modify any
+pipeline code.
+
+### 1. Overview
+
+The full workflow is owned by the coordinator, but each worker executes a
+self-contained slice:
+
+```text
+video split
+    |
+    v
+worker_N/videos.json
+    |
+    v
+OmniShotCut adaptive keyframe extraction
+    |
+    v
+frames.ndjson + map-keyframes
+    |
+    v
+embedding with OpenCLIP/Jina/etc.
+    |
+    v
+embeddings.npy + manifest
+    |
+    v
+send artifacts back to coordinator
+```
+
+Key properties:
+
+- **Each worker processes only its assigned videos.** Your input
+  `worker_<id>/videos.json` already contains exactly the videos you are
+  responsible for; never add or remove videos manually.
+- **Workers are independent.** You do not communicate with other workers, and
+  your run does not depend on theirs. If yours fails, only your shard is
+  missing and it can be re-run alone.
+- **Different devices are allowed.** Workers may run on any supported device:
+  Apple Silicon **MPS**, NVIDIA **CUDA**, or plain **CPU**. `--device auto`
+  picks CUDA > MPS > CPU in that priority order, so a single command works on
+  every machine.
+
+#### Hardware and runtime expectations
+
+- **CPU execution is supported but slow.** OmniShotCut shot detection and
+  embedding on CPU are dramatically slower than on an accelerator, so budget
+  accordingly if your assigned worker is CPU-only.
+- **GPU (CUDA) or MPS is recommended for large shards.** Larger keyframe sets
+  benefit most from an accelerator; `--device auto` selects it for you when
+  available.
+- **Do not run multiple workers on one machine without enough resources.** Each
+  worker loads its own model and decodes videos; running several on one machine
+  can exhaust memory or CPU before any of them completes. Prefer one worker per
+  machine unless the hardware demonstrably fits more.
+
+### 2. Expected folder structure
+
+Before running, the coordinator provides you with a split directory. You only
+touch your own worker folder:
+
+```text
+project/
+├── data/
+│   ├── raw/
+│   │   ├── aic2026_batch1/
+│   │   │   └── keyframes/               # keyframe image collection (embedding input)
+│   │   │       ├── L21_V001/
+│   │   │       │   ├── 001.jpg
+│   │   │       │   └── ...
+│   │   │       └── ...
+│   │   │
+│   │   └── videos/                      # raw videos (extraction input)
+│   │       ├── L21_V001.mp4
+│   │       └── ...
+│   │
+│   └── keyframe-splits/
+│       ├── split_manifest.json
+│       └── worker_000/
+│           └── videos.json
+│
+├── scripts/
+└── outputs/
+```
+
+The keyframe image collection (`data/raw/aic2026_batch1/keyframes/<video_id>/NNN.jpg`)
+is a required input for the embedding step (Section 6). Extraction never writes
+images; the collection must already exist, keyed by the ordinals in your
+`frames.ndjson`.
+
+After you run worker_000, the extraction and embedding commands (Sections 5-6)
+produce:
+
+```text
+outputs/
+├── keyframes_worker_000/
+│   ├── frames.ndjson
+│   ├── map-keyframes/
+│   └── manifest.json
+│
+└── embeddings_worker_000/
+    ├── embeddings.npy
+    ├── frames.ndjson
+    ├── manifest.json
+    └── checkpoint.json
+```
+
+Note the checkpoint files' differing lifecycles: `keyframes_worker_000/`
+contains no `checkpoint.json` after success (extraction deletes it on
+completion), while `embeddings_worker_000/checkpoint.json` is kept by the
+embedder even after success (see Sections 6 and 8).
+
+### 3. Worker input
+
+You need three things before starting:
+
+- **`worker_<id>/videos.json`** — your assigned video manifest (video ids +
+  paths). It may also record a `source_dir` that the paths are relative to.
+- **The corresponding video files** — every video listed in your manifest,
+  available on your machine (copied locally or on a shared/mounted
+  filesystem).
+- **Installed dependencies** — the Python environment plus ffmpeg/ffprobe
+  (Section 4).
+
+#### The `video_root` concept
+
+Your `videos.json` stores paths that are usually relative to where the videos
+were discovered, e.g.:
+
+```json
+{"path": "L21_V001.mp4", ...}
+```
+
+Every machine has the videos at a different absolute location, so you pass the
+actual location with `--video-root` and the pipeline resolves the relative
+paths for you. For example, on a Mac the videos might live under:
+
+```text
+/Users/alice/datasets/videos
+```
+
+and on Windows under:
+
+```text
+D:\datasets\videos
+```
+
+Both workers run the same command except for `--video-root`:
+
+```bash
+# Mac
+--video-root /Users/alice/datasets/videos
+
+# Windows
+--video-root D:\datasets\videos
+```
+
+Pass `--video-root` to both the extraction and analysis entrypoints whenever
+your videos do not sit at the location recorded in the manifest.
+
+If your split directory is available, sanity-check it before extracting:
+
+```bash
+python scripts/verify_video_split.py --split-dir data/keyframe-splits
+```
+
+This confirms `split_manifest.json` exists, every `worker_*/videos.json`
+parses, no video is duplicated or missing across workers, and the totals match
+the recorded manifest.
+
+### 4. Environment setup
+
+Clone the repository and create the Python environment, then install ffmpeg.
+
+#### macOS (Apple Silicon)
+
+```bash
+brew install ffmpeg
+
+python -m venv .venv
+source .venv/bin/activate
+
+pip install -e ".[dev,openclip]"
+```
+
+This single install covers both the extraction and the embedding commands
+(`.[dev]` adds pytest; `.[openclip]` adds the model dependencies). See the
+notes below for what each group provides and the extra `omnishotcut` install.
+
+With `--device auto`, Apple Silicon machines automatically use the **MPS**
+backend (CUDA is detected first, then MPS, then CPU). The CLI prints the
+selected device when a model loads, e.g. `Selected device: mps`.
+
+#### Windows (PowerShell)
+
+```powershell
+winget install Gyan.FFmpeg
+
+python -m venv .venv
+
+.venv\Scripts\activate
+
+pip install -e ".[dev,openclip]"
+```
+
+Notes for all platforms:
+
+- **The `.[openclip]` group is required even for extraction.** The documented
+  extraction command uses the OmniShotCut detector, which loads the model
+  through torch; installing only the base `.[dev]` group leaves extraction
+  failing with `ModuleNotFoundError: No module named 'torch'`. The combined
+  install above provides everything for both commands.
+- **The `omnishotcut` package is installed separately.** The OmniShotCut
+  detector imports the upstream `omnishotcut` library, which is not part of
+  this repository's extras. Install it from its repository as the project does:
+
+  ```bash
+  pip install "git+https://github.com/UVA-Computer-Vision-Lab/OmniShotCut.git"
+  ```
+
+  Without it, extraction fails with `ModuleNotFoundError: No module named
+  'omnishotcut'` when the detector loads.
+- **CUDA users** must install a PyTorch build that matches their CUDA version
+  (the `pip install -e ".[openclip]"` wheels are CPU-compatible and may not
+  include CUDA). Follow the torch install command printed at
+  <https://pytorch.org/get-started/locally/> for your driver, then verify with
+  `python -c "import torch; print(torch.cuda.is_available())"`.
+- **ffmpeg and ffprobe must be available in `PATH`.** The extraction command
+  preflights both and fails fast with a clear error if either is missing
+  (Section 9).
+
+### 5. Extraction command
+
+Extract keyframes from your assigned videos:
+
+```bash
+python scripts/extract_keyframes.py \
+  --videos data/keyframe-splits/worker_000/videos.json \
+  --video-root /path/to/videos \
+  --output-dir outputs/keyframes_worker_000 \
+  --extractor omnishotcut_adaptive \
+  --detector omnishotcut \
+  --sampler adaptive_v1 \
+  --device auto \
+  --progress on
+```
+
+Only `--video-root` differs per machine:
+
+```bash
+# Mac example:
+python scripts/extract_keyframes.py \
+  --videos data/keyframe-splits/worker_000/videos.json \
+  --video-root /Users/alice/datasets/videos \
+  --output-dir outputs/keyframes_worker_000 \
+  --extractor omnishotcut_adaptive --detector omnishotcut \
+  --sampler adaptive_v1 --device auto --progress on
+```
+
+```powershell
+# Windows example:
+python scripts/extract_keyframes.py `
+  --videos data/keyframe-splits/worker_000/videos.json `
+  --video-root D:\datasets\videos `
+  --output-dir outputs/keyframes_worker_000 `
+  --extractor omnishotcut_adaptive --detector omnishotcut `
+  --sampler adaptive_v1 --device auto --progress on
+```
+
+**Output.** On success you get, in `outputs/keyframes_worker_000/`:
+
+- `frames.ndjson` — one canonical keyframe record per line (video id,
+  ordinal, timestamp, fps, frame index);
+- `map-keyframes/` — per-video `n, pts_time, fps, frame_idx` maps;
+- `manifest.json` — versioned metadata (extractor, detector, sampler, all
+  effective parameters, config hash, source videos manifest path, keyframe
+  count).
+
+The run is resumable: an interrupted run is restarted with the same command and
+skips already-completed videos. On completion, `checkpoint.json` is removed and
+the artifact is validated (unique `(video_id, frame_index)` keys, every video
+accounted for) before being marked done.
+
+### 6. Embedding command
+
+Embed the extracted keyframes into a resumable shard:
+
+```bash
+python scripts/embed_shard.py \
+  --frames outputs/keyframes_worker_000/frames.ndjson \
+  --output-dir outputs/embeddings_worker_000 \
+  --model openclip:ViT-L-14:laion2b_s32b_b82k \
+  --worker-id 0 \
+  --device auto \
+  --progress on
+```
+
+Set `--worker-id` to your worker number (0 for `worker_000`). It is recorded in
+the shard manifest and used by the coordinator's merge to order shards
+deterministically; it must be fixed for a given worker so a resumed run matches.
+
+Each keyframe record in `frames.ndjson` carries a 1-based `keyframe_ordinal`
+(its position in the extraction's new selection). The embedder resolves the
+image for that record as `<keyframes-root>/keyframes/<video_id>/NNN.jpg`
+(trying `.jpg`, then `.jpeg`, then `.png`), where `NNN` is the record's
+ordinal. The default `<keyframes-root>` is the config's `data.raw_dir`
+(`data/raw/aic2026_batch1`); override it with
+`--keyframes-dir /path/to/root` when the images live elsewhere.
+
+Two consequences of this contract:
+
+- **Extraction does not write image files.** `extract_keyframes.py` writes only
+  timing records (`frames.ndjson`, `map-keyframes/*.csv`, `manifest.json`); it
+  never materializes JPEGs. The images consumed by embedding must already exist
+  in a `keyframes/<video_id>/NNN.jpg` collection (keyed by the ordinals in your
+  `frames.ndjson`) before you embed.
+- **`--keyframes-dir` points at the root that *contains* the `keyframes/`
+  collection**, not at a `keyframes/` folder itself. If the collection is at
+  `/data/kf/keyframes/L21_V001/001.jpg`, pass `--keyframes-dir /data/kf`.
+
+What you get, in `outputs/embeddings_worker_000/`:
+
+- `embeddings.npy` — dense `(N, D)` matrix;
+- `frames.ndjson` — the shard's keyframe records, in row order;
+- `manifest.json` — model, embedding space, dimension, dtype, device, worker
+  id, counts (written only on successful completion);
+- `checkpoint.json` — resume state.
+
+Two contracts to rely on:
+
+- **`embeddings.npy` row `i` matches `frames.ndjson` row `i`.** The matrix rows
+  always correspond exactly to the record lines, in order.
+- **The checkpoint allows resume.** If the run is interrupted, re-running the
+  *same* command resumes from `checkpoint.json` and skips already-embedded
+  frames. The resume is strict about the model, embedding space, source frames,
+  worker id, and total count, so always reuse the exact command from the
+  interrupted run. A changed device or precision is allowed (logged as a
+  warning), so a shard started on one machine can be resumed on another.
+
+Checkpoint lifecycle: unlike extraction (which deletes its checkpoint on
+success), `embed_shard` **keeps** `checkpoint.json` after a successful run. It
+is harmless and can stay on disk, but it is not part of the deliverable —
+exclude it when uploading (Section 8).
+
+The `--model` spec is `[backend:]model[:pretrained]`; the `openclip` backend
+ships with the repo, and other backends (Jina CLIP, SigLIP, MobileCLIP, ...)
+can be attached via `register_embedder` (`aic2026.image_embedder`).
+
+### 7. Verification before upload
+
+Before sending anything back to the coordinator, verify both artifacts. All
+checks below use plain `python` (your activated virtual environment) and work
+on macOS, Linux, and Windows PowerShell.
+
+#### Keyframes (`outputs/keyframes_worker_000/`)
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+d = Path("outputs/keyframes_worker_000")
+frames = d / "frames.ndjson"
+manifest = d / "manifest.json"
+
+assert frames.is_file() and frames.stat().st_size > 0, "frames.ndjson missing or empty"
+assert manifest.is_file(), "manifest.json missing"
+
+seen = {}
+for line in frames.open():
+    r = json.loads(line)
+    key = (r["keyframe"]["video_id"]["value"], r["frame_index"])
+    if key in seen:
+        raise SystemExit(f"DUPLICATE keyframe {key} (was line {seen[key]})")
+    seen[key] = line
+
+print(f"keyframes OK: {len(seen)} unique keyframes, manifest present")
+PY
+```
+
+#### Embeddings (`outputs/embeddings_worker_000/`)
+
+```bash
+python - <<'PY'
+import json
+import numpy as np
+from pathlib import Path
+
+d = Path("outputs/embeddings_worker_000")
+assert (d / "embeddings.npy").is_file(), "embeddings.npy missing"
+assert (d / "manifest.json").is_file(), "manifest.json missing"
+
+emb = np.load(d / "embeddings.npy")
+n_frames = sum(1 for _ in (d / "frames.ndjson").open())
+assert emb.shape[0] == n_frames, f"rows {emb.shape[0]} != frames {n_frames}"
+print(f"embeddings OK: {emb.shape} matches {n_frames} frames, manifest present")
+PY
+```
+
+Notes:
+
+- The heredoc form `python - <<'PY'` works in bash/zsh (macOS, Linux) and in
+  PowerShell (which also supports `@'...'@ | python -`). If your shell cannot
+  feed stdin, save either block to `verify.py` and run `python verify.py`.
+- The keyframe check keys on `(video_id, frame_index)` inside the record's
+  `keyframe` object — that is the exact uniqueness contract the extraction
+  validates before declaring the artifact complete.
+- Both `manifest.json` files are required for the coordinator's merge to accept
+  your shards (an embedding shard without `manifest.json` is treated as
+  incomplete and rejected).
+
+### 8. What to send back
+
+Send the two artifacts back to the coordinator, bundled as `worker_000_result/`:
+
+```text
+worker_000_result/
+
+├── keyframes/
+│   ├── frames.ndjson
+│   ├── map-keyframes/
+│   └── manifest.json
+│
+└── embeddings/
+    ├── embeddings.npy
+    ├── frames.ndjson
+    └── manifest.json
+```
+
+Do **not** include `checkpoint.json` from either directory. Extraction removes
+its checkpoint automatically on success; embedding keeps its `checkpoint.json`
+on disk but it is resume state only and not a deliverable. Include the folder
+name matching your worker id (e.g. `worker_001_result/`) so the merge can order
+shards deterministically.
+
+### 9. Troubleshooting
+
+**`ffmpeg` not found**
+
+```text
+required media tools not found on PATH: ffmpeg, ffprobe. Install ffmpeg >= 4.4 ...
+```
+
+The preflight ran before extraction and stopped the run. Install ffmpeg
+(Section 4), confirm `ffmpeg -version` and `ffprobe -version` work in your
+shell, and re-run the same command.
+
+**CUDA unavailable**
+
+`--device auto` fell back to a non-CUDA device, or `torch.cuda.is_available()`
+is `False`. Your PyTorch build does not match your CUDA driver. Reinstall the
+CUDA build for your driver version (Section 4), or explicitly choose a
+supported device with `--device mps` (Apple Silicon) / `--device cpu` and
+proceed — the outputs are device-independent.
+
+**MPS fallback**
+
+On Apple Silicon, `--device auto` uses MPS automatically. If MPS is
+unavailable or misbehaves, `--device cpu` is a safe fallback. The embedding
+space identity is unchanged across devices, so a shard embedded on MPS and one
+on CPU can still be merged.
+
+**Resume after interruption**
+
+Re-run the exact same extraction or embedding command. Extraction skips
+completed videos; embedding resumes from `checkpoint.json` and skips
+already-embedded frames. If you changed any parameter, the run refuses to mix
+configurations and tells you what differs — reuse the original command rather
+than editing it.
+
+**Wrong `--video-root`**
+
+If videos cannot be found, the extractor reports unresolved or missing paths.
+Confirm the path resolves: your manifest stores relative paths (e.g.
+`L21_V001.mp4`) and `--video-root` must be the directory that contains them.
+Verify by listing the directory and comparing with the manifest's recorded
+`source_dir`.
+
+### Checklist
+
+**Before running:**
+
+- [ ] pulled latest code
+- [ ] ffmpeg installed (ffmpeg and ffprobe on `PATH`)
+- [ ] worker videos downloaded
+- [ ] `verify_video_split` passed
+
+**After running:**
+
+- [ ] keyframe artifact generated (`frames.ndjson`, `manifest.json`)
+- [ ] embedding artifact generated (`embeddings.npy`, `manifest.json`)
+- [ ] manifests included in the folder you send back
