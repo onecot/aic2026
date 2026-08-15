@@ -80,8 +80,10 @@ Examples of worker ids:
 - `worker_001`
 - `worker_002`
 
-Use the same id everywhere: in paths (`worker_XXX`) and as the command
-`--worker-id XXX`. Never use a concrete worker number in commands.
+Use the same id everywhere in paths: the worker's assigned manifest
+(`data/keyframe-splits/worker_XXX/videos.json`) and the extraction output
+directory (`outputs/keyframes_worker_XXX`). Never use a concrete worker number
+in commands.
 
 ## 5. Step 1: Verify assigned split
 
@@ -144,7 +146,7 @@ Verify the artifact before sending it back (exit code 0 = valid, 1 = invalid):
 ```bash
 python scripts/verify_keyframe_extraction.py \
   --output-dir outputs/keyframes_worker_XXX \
-  --videos videos.json
+  --videos data/keyframe-splits/worker_XXX/videos.json
 ```
 
 `--videos` is optional; pass the worker's assigned `videos.json` to also check
