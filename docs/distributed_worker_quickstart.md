@@ -1,9 +1,9 @@
 # Distributed Worker Quickstart
 
-## 1. Workflow overview
+## 1. Workflow
 
 ```text
-worker_N/videos.json
+worker_XXX/videos.json
         |
         v
 verify split
@@ -12,17 +12,21 @@ verify split
 OmniShotCut adaptive keyframe extraction
         |
         v
-keyframes artifact
-        |
-        v
-embedding
-        |
-        v
-embedding artifact
+keyframe artifact
         |
         v
 send back to coordinator
 ```
+
+Your only job is to extract keyframes from the videos assigned to you.
+
+> **Important:**
+> - Extraction does NOT create JPEG images.
+> - It only creates metadata (`frames.ndjson`, `map-keyframes/`) describing
+>   which frames are keyframes.
+> - The existing BTC keyframe image collection is still required later, when
+>   embeddings are computed centrally.
+> - You only need access to the assigned raw videos.
 
 ## 2. Required inputs
 
@@ -34,13 +38,6 @@ send back to coordinator
   `/path/to/videos`
   The video files listed in your manifest, available on your machine.
 
-- **Keyframe images for embedding**
-  `/path/to/aic2026_batch1/keyframes/`
-  A pre-existing collection of JPEGs, one per keyframe.
-
-> **Important:** Extraction does NOT create JPG images. Embedding requires
-> existing images at `keyframes/<video_id>/<ordinal>.jpg`.
-
 ## 3. Environment setup
 
 **macOS:**
@@ -51,7 +48,7 @@ brew install ffmpeg
 python -m venv .venv
 source .venv/bin/activate
 
-pip install -e ".[dev,openclip]"
+pip install -e .
 pip install "git+https://github.com/UVA-Computer-Vision-Lab/OmniShotCut.git"
 ```
 
@@ -63,7 +60,7 @@ winget install Gyan.FFmpeg
 python -m venv .venv
 .venv\Scripts\activate
 
-pip install -e ".[dev,openclip]"
+pip install -e .
 pip install "git+https://github.com/UVA-Computer-Vision-Lab/OmniShotCut.git"
 ```
 
@@ -83,8 +80,8 @@ Examples of worker ids:
 - `worker_001`
 - `worker_002`
 
-Use the same id everywhere: in paths (`worker_XXX`) and as the embedding
-flag (`--worker-id XXX`). Never use a concrete worker number in commands.
+Use the same id everywhere: in paths (`worker_XXX`) and as the command
+`--worker-id XXX`. Never use a concrete worker number in commands.
 
 ## 5. Step 1: Verify assigned split
 
@@ -127,7 +124,12 @@ that contains your video files.
 --video-root D:\datasets\videos
 ```
 
-**Output** — in `outputs/keyframes_worker_XXX/`:
+The run is resumable: if interrupted, re-run the same command and it skips
+already-completed videos.
+
+## 7. Output artifact
+
+In `outputs/keyframes_worker_XXX/`:
 
 ```text
 frames.ndjson
@@ -135,99 +137,48 @@ map-keyframes/
 manifest.json
 ```
 
-The run is resumable: if interrupted, re-run the same command and it skips
-already-completed videos.
+## 8. Step 3: Verify extracted keyframes
 
-## 7. Step 3: Verify extracted keyframes
-
-```bash
-python - <<'PY'
-import json
-from pathlib import Path
-
-d = Path("outputs/keyframes_worker_XXX")
-frames = d / "frames.ndjson"
-manifest = d / "manifest.json"
-
-assert frames.is_file() and frames.stat().st_size > 0, "frames.ndjson missing or empty"
-assert manifest.is_file(), "manifest.json missing"
-
-seen = {}
-for line in frames.open():
-    r = json.loads(line)
-    key = (r["keyframe"]["video_id"]["value"], r["frame_index"])
-    if key in seen:
-        raise SystemExit(f"DUPLICATE keyframe {key} (was line {seen[key]})")
-    seen[key] = line
-
-print(f"keyframes OK: {len(seen)} unique keyframes, manifest present")
-PY
-```
-
-## 8. Step 4: Embed keyframes
+Verify the artifact before sending it back (exit code 0 = valid, 1 = invalid):
 
 ```bash
-python scripts/embed_shard.py \
-  --frames outputs/keyframes_worker_XXX/frames.ndjson \
-  --output-dir outputs/embeddings_worker_XXX \
-  --model openclip:ViT-L-14:laion2b_s32b_b82k \
-  --worker-id XXX \
-  --keyframes-dir /PATH/TO/aic2026_batch1 \
-  --device auto \
-  --progress on
+python scripts/verify_keyframe_extraction.py \
+  --output-dir outputs/keyframes_worker_XXX \
+  --videos videos.json
 ```
 
-**Mac example:**
+`--videos` is optional; pass the worker's assigned `videos.json` to also check
+coverage (every assigned video present, no unexpected videos, totals match).
+The verifier checks the manifest, frame-record validity and ordering, and the
+per-video `map-keyframes/` files:
 
-```bash
---keyframes-dir /Users/<user>/datasets/aic2026_batch1
+```text
+Keyframe extraction verification: PASS
+
+Videos:
+  expected: 174
+  found: 174
+
+Keyframes:
+  total: 65000
+  duplicates: 0
+
+Manifest:
+  extractor: omnishotcut_adaptive
+  detector: omnishotcut
+  sampler: adaptive_v1
 ```
 
-**Windows PowerShell example:**
-
-```powershell
---keyframes-dir D:\datasets\aic2026_batch1
-```
-
-> **Important:** `--keyframes-dir` points to the parent directory containing
-> `keyframes/<video_id>/<ordinal>.jpg` — NOT the `keyframes` folder itself.
-
-The run is resumable: if interrupted, re-run the exact same command and it
-resumes from `checkpoint.json`, skipping already-embedded frames.
-
-## 9. Step 5: Verify embeddings
-
-```bash
-python - <<'PY'
-import numpy as np
-from pathlib import Path
-
-d = Path("outputs/embeddings_worker_XXX")
-assert (d / "embeddings.npy").is_file(), "embeddings.npy missing"
-assert (d / "manifest.json").is_file(), "manifest.json missing"
-
-emb = np.load(d / "embeddings.npy")
-n_frames = sum(1 for _ in (d / "frames.ndjson").open())
-assert emb.shape[0] == n_frames, f"rows {emb.shape[0]} != frames {n_frames}"
-print(f"embeddings OK: {emb.shape} matches {n_frames} frames, manifest present")
-PY
-```
-
-## 10. Send back artifacts
+## 9. Send back artifacts
 
 Send one folder back to the coordinator, named `worker_XXX_result/`:
 
 ```text
 worker_XXX_result/
 
-├── keyframes/
-│   ├── frames.ndjson
-│   ├── map-keyframes/
-│   └── manifest.json
-│
-└── embeddings/
-    ├── embeddings.npy
+└── keyframes/
     ├── frames.ndjson
+    ├── map-keyframes/
     └── manifest.json
 ```
 
@@ -236,3 +187,15 @@ worker_XXX_result/
 - checkpoint files
 - raw videos
 - environment folders
+
+## 10. Coordinator next steps
+
+Once all workers deliver their `worker_XXX_result/keyframes/` folders:
+
+1. **Merge keyframe shards** into one canonical `frames.ndjson` /
+   `map-keyframes/` artifact.
+2. **Prepare the embedding environment** on the target GPU machine
+   (Kaggle/Modal): install the `jina` dependency group and the Jina CLIP v2
+   checkpoint.
+3. **Run Jina CLIP v2 embeddings** on the merged keyframes.
+4. **Merge embeddings** into the final embedding artifact.

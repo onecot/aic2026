@@ -48,7 +48,46 @@ SPLIT_MANIFEST_SCHEMA_VERSION = "1.0"
 #: Filename of the split manifest inside the output directory.
 SPLIT_MANIFEST_FILENAME = "split_manifest.json"
 
+#: Portability warning logged when a video manifest carries absolute paths.
+ABSOLUTE_PATH_WARNING = (
+    "WARNING: video manifest contains absolute paths. Distributed workers may "
+    "not be portable across machines. Rebuild the manifest with relative paths "
+    "before sharing."
+)
+
 logger = logging.getLogger(__name__)
+
+
+def absolute_path_video_ids(manifest: VideoManifest) -> tuple[str, ...]:
+    """Return the video ids whose ``path`` is absolute.
+
+    Expected input:
+        - manifest: a parsed :class:`VideoManifest`.
+
+    Returns:
+        - Tuple of video ids with absolute paths, in manifest order.
+    """
+    return tuple(
+        entry.video_id for entry in manifest.videos if Path(entry.path).is_absolute()
+    )
+
+
+def warn_on_absolute_paths(manifest: VideoManifest) -> None:
+    """Log a portability warning when the manifest contains absolute paths.
+
+    Non-breaking: the manifest is still used as-is; only a warning is emitted.
+    Absolute paths in a shared split silently break multi-machine workers, so
+    the warning points at rebuilding the manifest with relative paths.
+
+    Expected input:
+        - manifest: a parsed :class:`VideoManifest`.
+
+    Returns:
+        - None.
+    """
+    absolute = absolute_path_video_ids(manifest)
+    if absolute:
+        logger.warning("%s (video ids: %s)", ABSOLUTE_PATH_WARNING, ", ".join(absolute))
 
 
 class SplitError(RuntimeError):
@@ -284,6 +323,7 @@ def split_video_manifest(
         )
 
     manifest = load_video_manifest(videos_path)
+    warn_on_absolute_paths(manifest)
     videos = list(manifest.videos)
     per_worker = assign_videos(videos, num_workers)
     _validate_split(per_worker, videos)
@@ -502,6 +542,8 @@ def verify_video_split(split_dir: Path | str) -> SplitVerificationReport:
                 )
             )
             continue
+
+        warn_on_absolute_paths(worker_manifest)
 
         for entry in worker_manifest.videos:
             seen_videos[entry.video_id] = seen_videos.get(entry.video_id, 0) + 1

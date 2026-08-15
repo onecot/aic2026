@@ -144,6 +144,74 @@ class TestCreateShotDetector:
         assert detector.name == "omnishotcut"
         assert detector.last_fps is None
         assert detector.last_num_frames is None
+        assert detector.model_load_count == 0
+
+
+class TestOmniShotCutModelLoadCount:
+    def test_model_loads_once_and_is_reused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The OmniShotCut model is loaded a single time per detector.
+
+        Substitutes the Torch/OmniShotCut load path so the detector's cache
+        behavior is observable without a GPU or checkpoint download.
+        """
+        from omnishotcut.architecture import backbone, model as osc_model, transformer
+        from aic2026.shot_detection import omnishotcut
+
+        detector = create_shot_detector(
+            "omnishotcut",
+            checkpoint="uva-cv-lab/OmniShotCut",
+            filename=DEFAULT_OMNISHOTCUT_FILENAME,
+            mode="clean_shot",
+            overlap=20,
+            device="cpu",
+        )
+
+        class _Stub:
+            pass
+
+        loaded = {"count": 0}
+
+        def fake_load(checkpoint_path: str, **kwargs: object) -> dict[str, object]:
+            args = _Stub()
+            args.max_process_window_length = 2
+            args.num_intra_relation_classes = 1
+            args.num_inter_relation_classes = 1
+            args.num_queries = 1
+            args.aux_loss = False
+            model = _Stub()
+            model.load_state_dict = lambda *a, **k: None
+            model.to = lambda *a, **k: model
+            model.eval = lambda: None
+            loaded["count"] += 1
+            return {"args": args, "model": model}
+
+        monkeypatch.setattr(omnishotcut, "resolve_device", lambda requested: "cpu")
+        # Point the detector at a local checkpoint file so no HF download runs.
+        ckpt = tmp_path / "ckpt.pth"
+        ckpt.write_bytes(b"placeholder")
+        monkeypatch.setattr(
+            omnishotcut.OmniShotCutShotDetector,
+            "_resolve_checkpoint_path",
+            lambda self: str(ckpt),
+        )
+        monkeypatch.setattr("torch.load", fake_load)
+        monkeypatch.setattr(backbone, "build_backbone", lambda args: _Stub())
+        monkeypatch.setattr(transformer, "build_transformer", lambda args: _Stub())
+
+        def fake_omnishotcut(*args: object, **kwargs: object) -> _Stub:
+            model = _Stub()
+            model.load_state_dict = lambda *a, **k: None
+            model.to = lambda *a, **k: model
+            model.eval = lambda: None
+            return model
+
+        monkeypatch.setattr(osc_model, "OmniShotCut", fake_omnishotcut)
+
+        detector._ensure_model()
+        detector._ensure_model()
+
+        assert loaded["count"] == 1
+        assert detector.model_load_count == 1
 
     def test_names(self) -> None:
         assert "omnishotcut" in SHOT_DETECTOR_NAMES

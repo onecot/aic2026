@@ -7,6 +7,7 @@ deterministic, and cross-platform.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -268,6 +269,31 @@ class TestSplitVideoManifest:
             split_video_manifest(videos_file, 2, split_dir)
         # overwrite works
         split_video_manifest(videos_file, 2, split_dir, overwrite=True)
+
+    def test_absolute_paths_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        entries = [
+            VideoEntry(video_id="L21_V001", path="/abs/path/001.mp4", num_frames=100),
+            VideoEntry(video_id="L21_V002", path="/abs/path/002.mp4", num_frames=200),
+        ]
+        videos_path = _save(tmp_path, entries)
+        with caplog.at_level(logging.WARNING, logger="aic2026.keyframe_extraction_split"):
+            split_video_manifest(videos_path, 2, tmp_path / "splits")
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("video manifest contains absolute paths" in m for m in messages)
+        assert any("L21_V001" in m and "L21_V002" in m for m in messages)
+
+    def test_relative_paths_no_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        entries = [
+            VideoEntry(video_id="L21_V001", path="videos/001.mp4", num_frames=100),
+            VideoEntry(video_id="L21_V002", path="videos/002.mp4", num_frames=200),
+        ]
+        videos_path = _save(tmp_path, entries)
+        with caplog.at_level(logging.WARNING, logger="aic2026.keyframe_extraction_split"):
+            split_video_manifest(videos_path, 2, tmp_path / "splits")
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any("video manifest contains absolute paths" in m for m in messages)
 
     def test_missing_source(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):

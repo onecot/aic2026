@@ -150,6 +150,96 @@ def test_unknown_backend_raises() -> None:
         create_image_embedder("nosuch:model")
 
 
+def test_jina_clip_backend_is_registered() -> None:
+    """The shipped Jina CLIP backend name resolves through the registry."""
+    from aic2026.image_embedder import EMBEDDER_FACTORIES
+
+    assert "jina-clip" in EMBEDDER_FACTORIES
+
+
+def test_jina_clip_backend_is_constructible_through_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``jina-clip`` model spec constructs through the registry with fake deps."""
+    from aic2026.image_embedder import create_image_embedder
+    from aic2026.model_backends import jina
+
+    class _FakeRegistryTensor:
+        def __init__(self, values: object) -> None:
+            self.values = np.asarray(values, dtype=np.float32)
+            self.device: str | None = None
+
+        def to(self, device: str) -> _FakeRegistryTensor:
+            self.device = device
+            return self
+
+        def detach(self) -> _FakeRegistryTensor:
+            return self
+
+        def cpu(self) -> _FakeRegistryTensor:
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return self.values
+
+    class _FakeRegistryProcessor:
+        def __call__(self, **kwargs: object) -> object:
+            return type("Encoded", (), {"to": lambda self, device: {"num_items": 2}})()
+
+    class _FakeRegistryModel:
+        def __init__(self) -> None:
+            self.config = type("Config", (), {"projection_dim": 3})()
+            self.placement: list[str] = []
+
+        def eval(self) -> None:
+            pass
+
+        def to(self, device: str) -> _FakeRegistryModel:
+            self.placement.append(device)
+            return self
+
+        def get_image_features(self, **kwargs: object) -> _FakeRegistryTensor:
+            return _FakeRegistryTensor(np.zeros((2, 3), dtype=np.float32))
+
+    class _FakeRegistryTransformers:
+        def __init__(self) -> None:
+            self.model = _FakeRegistryModel()
+            self.processor = _FakeRegistryProcessor()
+            self.AutoModel = type(
+                "AutoModel",
+                (),
+                {"from_pretrained": staticmethod(lambda *a, **k: self.model)},
+            )
+            self.AutoProcessor = type(
+                "AutoProcessor",
+                (),
+                {"from_pretrained": staticmethod(lambda *a, **k: self.processor)},
+            )
+
+    class _FakeRegistryTorch:
+        def __init__(self) -> None:
+            self.cuda = type("Cuda", (), {"is_available": staticmethod(lambda: False)})()
+            self.backends = type(
+                "Backends",
+                (),
+                {"mps": type("Mps", (), {"is_available": staticmethod(lambda: False)})()},
+            )
+
+        @staticmethod
+        def inference_mode() -> object:
+            return nullcontext()
+
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeRegistryTorch(), _FakeRegistryTransformers()),
+    )
+    embedder = create_image_embedder("jina-clip:jina-clip-v2:jinaai/jina-clip-v2", device="cpu")
+    assert isinstance(embedder, ImageEmbedder)
+    assert embedder.embedding_dim == 3
+    assert embedder.embedding_space.backend == "jina-clip"
+
+
 # ------------------------------------------------------------------ OpenCLIP adapter (fakes)
 
 

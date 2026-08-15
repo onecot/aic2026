@@ -7,6 +7,7 @@ real media files are needed). Tests are fast, deterministic, and cross-platform.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -173,6 +174,40 @@ class TestVerifyVideoSplit:
         assert payload["valid"] is True
         assert payload["total_videos"] == 4
         assert payload["workers"][0]["num_frames"] == 400
+
+    def test_absolute_paths_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        split_dir = _split(tmp_path, num_workers=2, videos=2)
+        with caplog.at_level(logging.WARNING, logger="aic2026.keyframe_extraction_split"):
+            verify_video_split(split_dir)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("video manifest contains absolute paths" in m for m in messages)
+
+    def test_relative_paths_no_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A worker manifest with genuinely relative paths must not warn.
+        source = tmp_path / "source.json"
+        entries = [
+            VideoEntry(video_id=f"L21_V{i:03d}", path=f"videos/{i:03d}.mp4", num_frames=200)
+            for i in range(1, 3)
+        ]
+        save_video_manifest(source, _manifest(entries))
+        split_dir = tmp_path / "splits"
+        split_manifest = split_video_manifest(source, 2, split_dir)
+        # Rewrite each worker manifest with its assigned videos (relative paths).
+        by_id = {entry.video_id: entry for entry in entries}
+        for worker in split_manifest.workers:
+            _write_worker_manifest(
+                split_dir,
+                worker.worker_id,
+                [by_id[vid] for vid in worker.video_ids],
+            )
+        with caplog.at_level(logging.WARNING, logger="aic2026.keyframe_extraction_split"):
+            verify_video_split(split_dir)
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any("video manifest contains absolute paths" in m for m in messages)
 
 
 class TestVerifyVideoSplitCli:

@@ -36,6 +36,7 @@ import hashlib
 import json
 import logging
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1105,8 +1106,14 @@ def extract_keyframes(
             overlap=config.omnishotcut_overlap,
             device=config.device,
         )
+        logger.info(
+            "created shared shot detector %r once for %d videos",
+            config.detector,
+            total_videos,
+        )
 
     completed_video = 0
+    session_keyframes = 0
     for entry in videos.videos:
         if entry.video_id in completed_ids:
             completed_video += 1
@@ -1117,7 +1124,9 @@ def extract_keyframes(
             video_root=video_root,
         )
         extractor = _build_extractor(entry.video_id, config, shot_detector=shot_detector)
+        video_started = time.monotonic()
         keyframes = extractor.extract(video_path)
+        session_keyframes += len(keyframes)
         frames_scanned[entry.video_id] = extractor.last_frames_scanned
         write_video_ndjson(staging / f"{entry.video_id}.ndjson", keyframes)
         write_video_map(staging / f"{entry.video_id}.csv", keyframes)
@@ -1128,12 +1137,14 @@ def extract_keyframes(
             progress.update(
                 completed_video,
                 note=f"video={entry.video_id} frames={extractor.last_frames_scanned} keyframes={len(keyframes)}",
+                keyframes=session_keyframes,
             )
         logger.info(
-            "extracted %d keyframes from %d frames for %s",
+            "extracted %d keyframes from %d frames for %s (%.1fs)",
             len(keyframes),
             extractor.last_frames_scanned,
             entry.video_id,
+            time.monotonic() - video_started,
         )
 
     if len(completed_ids) != len(videos.videos):

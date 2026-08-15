@@ -28,6 +28,7 @@ from aic2026.progress import (
     create_progress_reporter,
     estimate_eta,
     format_duration,
+    format_eta,
     format_progress_line,
 )
 
@@ -162,12 +163,12 @@ def test_estimate_eta() -> None:
 
 
 def test_format_progress_line() -> None:
-    line = format_progress_line(75200, 177321, 5720.0)
-    assert "42.4%" in line
-    assert "75200/177321 frames" in line
-    assert "elapsed=01:35:20" in line
-    assert "speed=13.1 frames/s" in line
-    assert "ETA=" in line
+    line = format_progress_line(100, 873, 300.0, unit="videos")
+    assert "42.4%" not in line
+    assert "11.5%" in line
+    assert "100/873 videos" in line
+    assert "20.0 videos/min" in line
+    assert "ETA " in line
     assert "[" in line and "]" in line  # bar present
 
 
@@ -175,6 +176,64 @@ def test_format_progress_line_without_bar_and_note() -> None:
     line = format_progress_line(3, 6, 1.0, bar=False, note="video=L21_V001")
     assert "video=L21_V001" in line
     assert "[" not in line
+
+
+def test_format_eta() -> None:
+    assert format_eta(0) == "0s"
+    assert format_eta(42) == "42s"
+    assert format_eta(720) == "12m"
+    assert format_eta(9660) == "2h41m"
+
+
+def test_resumed_eta_uses_only_current_run_pace() -> None:
+    # Fresh run: 100 videos done in 300s of a 873-video job.
+    fresh = estimate_eta(100, 873, 300.0)
+    # Resumed run: 100 videos were already done before this run began, and this
+    # run has done 2 more in 300s. The ETA must be based on this run's pace
+    # (2 videos / 300s), not on the 100 from the previous session.
+    resumed = estimate_eta(102, 873, 300.0, initial_completed=100)
+    assert fresh == pytest.approx((873 - 100) * 300.0 / 100.0)
+    assert resumed == pytest.approx((873 - 102) * 300.0 / 2.0)
+    assert resumed > fresh
+
+    # No progress in this run yet -> no measurable ETA.
+    assert estimate_eta(100, 873, 300.0, initial_completed=100) == 0.0
+
+
+def test_resumed_format_progress_line_speed_and_eta() -> None:
+    line = format_progress_line(
+        102,
+        873,
+        300.0,
+        bar=False,
+        unit="videos",
+        initial_completed=100,
+        keyframes=500,
+    )
+    # 2 videos in 300s = 0.4 videos/min; 500 keyframes in 300s = 100 keyframes/min.
+    assert "102/873 videos" in line
+    assert "0.4 videos/min" in line
+    assert "100.0 keyframes/min" in line
+    assert "ETA " in line
+    assert "32h7m" in line
+
+
+def test_reporter_resume_offset_uses_initial_completed() -> None:
+    stream = io.StringIO()
+    reporter = ProgressReporter(
+        "interactive", interval_seconds=0.0, stream=stream, unit="videos"
+    )
+    reporter.begin()
+    reporter.set_total(873, completed=100)
+    reporter.update(102, note="video=L21_V003")
+    reporter.finish()
+
+    text = stream.getvalue()
+    assert "102/873 videos" in text
+    # The reporter was set with a resume offset of 100, so speed reflects only
+    # the work done after begin(): 2 videos over this run's elapsed time.
+    assert "videos/min" in text
+    assert "ETA " in text
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +340,7 @@ def test_interactive_reporter_writes_to_stream(env: tuple[Path, Path], tmp_path:
     text = stream.getvalue()
     assert "% |" in text
     assert "frames" in text
-    assert "ETA=" in text
+    assert "ETA " in text
     assert "Stage timing:" in text
     assert "load_frames:" in text
     assert "encode:" in text

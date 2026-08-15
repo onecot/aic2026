@@ -8,10 +8,10 @@ This module is the boundary between the shard embedding pipeline
 - a backend registry (``register_embedder`` / ``create_image_embedder``) that
   the shard CLI and tests use to construct an embedder from a model spec.
 
-It intentionally imports no model SDK at module level: the OpenCLIP adapter is
-imported lazily when an ``openclip`` embedder is constructed, so the core
-package stays independent of optional model runtimes. Extensible for other
-backends (Jina CLIP, SigLIP, MobileCLIP, ...) via :func:`register_embedder`.
+It intentionally imports no model SDK at module level: the OpenCLIP and Jina
+CLIP adapters are imported lazily when their embedder is constructed, so the
+core package stays independent of optional model runtimes. Extensible for
+other backends (SigLIP, MobileCLIP, ...) via :func:`register_embedder`.
 """
 
 from __future__ import annotations
@@ -228,7 +228,27 @@ def _openclip_factory(
     )
 
 
+def _jina_factory(
+    model_name: str,
+    pretrained: str | None,
+    device: str,
+    precision: str,
+    config: OpenClipConfig | None,
+) -> ImageEmbedder:
+    """Construct the Jina CLIP embedder (lazy import avoids a circular import)."""
+    from aic2026.model_backends.jina import JinaClipImageEmbedder
+
+    return JinaClipImageEmbedder(
+        model_name=model_name,
+        pretrained=pretrained,
+        device=device,
+        precision=precision,
+        config=config,
+    )
+
+
 EMBEDDER_FACTORIES[DEFAULT_BACKEND] = _openclip_factory
+EMBEDDER_FACTORIES["jina-clip"] = _jina_factory
 
 
 def create_image_embedder(

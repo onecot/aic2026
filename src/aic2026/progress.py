@@ -55,8 +55,30 @@ def format_duration(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def format_eta(seconds: float) -> str:
+    """Format an ETA compactly as ``Xs``, ``Xm``, or ``XhYm``.
+
+    Expected input:
+        - seconds: a non-negative remaining-time estimate.
+
+    Returns:
+        - ``42s``, ``12m``, or ``2h41m`` (rounded to the nearest minute /
+          hour). ``0`` renders as ``0s``.
+    """
+    seconds = max(0.0, float(seconds))
+    total = int(round(seconds))
+    if total <= 0:
+        return "0s"
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    hours, minutes = divmod(total, 3600)
+    return f"{hours}h{minutes // 60}m"
+
+
 def compute_speed(completed: int, elapsed: float) -> float:
-    """Compute the average throughput in frames/second.
+    """Compute the average throughput in units/second.
 
     Expected input:
         - completed: number of processed units.
@@ -70,24 +92,31 @@ def compute_speed(completed: int, elapsed: float) -> float:
     return float(completed) / float(elapsed)
 
 
-def estimate_eta(completed: int, total: int, elapsed: float) -> float:
+def estimate_eta(completed: int, total: int, elapsed: float, *, initial_completed: int = 0) -> float:
     """Estimate the remaining time (seconds) given current progress.
 
-    Uses the average throughput so far.
+    Uses the average throughput so far in this run. When ``initial_completed``
+    is set (a resumed run), only work done in the current run counts toward the
+    measured pace, so the ETA does not reset to a fresh-run estimate or borrow
+    throughput from work completed in an earlier session.
 
     Expected input:
-        - completed: number of processed units.
+        - completed: total units completed (including previously completed
+          work on resume).
         - total: total number of units (>= completed).
-        - elapsed: wall-clock seconds elapsed (>= 0).
+        - elapsed: wall-clock seconds elapsed in this run (>= 0).
+        - initial_completed: units already complete when this run started
+          (0 for a fresh run).
 
     Returns:
-        - Estimated remaining seconds (>= 0), or ``0.0`` when progress or
-          elapsed is not positive.
+        - Estimated remaining seconds (>= 0), or ``0.0`` when the run has no
+          measurable progress or elapsed is not positive.
     """
-    if completed <= 0 or elapsed <= 0:
+    session_completed = max(0, int(completed) - max(0, int(initial_completed)))
+    if session_completed <= 0 or elapsed <= 0:
         return 0.0
-    remaining = float(total - completed) * float(elapsed) / float(completed)
-    return max(0.0, remaining)
+    remaining = float(total - completed)
+    return max(0.0, remaining * float(elapsed) / float(session_completed))
 
 
 def format_progress_line(
@@ -98,22 +127,29 @@ def format_progress_line(
     bar: bool = True,
     note: str | None = None,
     unit: str = "frames",
+    initial_completed: int = 0,
+    keyframes: int | None = None,
 ) -> str:
     """Format a single-line progress report.
 
     Expected input:
-        - completed: number of processed units.
+        - completed: total processed units (including previously completed
+          work on resume).
         - total: total number of units.
-        - elapsed: wall-clock seconds elapsed.
+        - elapsed: wall-clock seconds elapsed in this run.
         - bar: include an ASCII progress bar (interactive mode).
         - note: optional context suffix (e.g. current video).
         - unit: unit label (``frames``, ``videos``, ...) for the report.
+        - initial_completed: units already complete when this run started
+          (0 for a fresh run); used so speed/ETA reflect the current run's
+          pace instead of borrowing a resumed session's history.
+        - keyframes: optional cumulative keyframes processed (for a
+          ``keyframes/min`` figure).
 
     Returns:
         - A single line such as::
 
-            [=======>........] 42.5% | 75200/177321 frames  \
-            elapsed=01:35:20 speed=13.1 frames/s ETA=02:12:40
+            [=======>........] 42.5% | 100/873 videos | 4.8 videos/min | ETA 2h41m
 
     """
     percent = 100.0 * completed / total if total > 0 else 100.0
@@ -121,14 +157,16 @@ def format_progress_line(
     if bar:
         filled = int(round(_BAR_WIDTH * percent / 100.0)) if total > 0 else _BAR_WIDTH
         prefix = "[" + "=" * filled + "." * (_BAR_WIDTH - filled) + "] "
-    speed = compute_speed(completed, elapsed)
-    eta = estimate_eta(completed, total, elapsed)
+    session_completed = max(0, int(completed) - max(0, int(initial_completed)))
+    speed_min = compute_speed(session_completed, elapsed) * 60.0
+    eta = estimate_eta(completed, total, elapsed, initial_completed=initial_completed)
     line = (
         f"{prefix}{percent:5.1f}% | {completed}/{total} {unit}  "
-        f"elapsed={format_duration(elapsed)} "
-        f"speed={speed:.1f} {unit}/s "
-        f"ETA={format_duration(eta)}"
+        f"| {speed_min:.1f} {unit}/min | ETA {format_eta(eta)}"
     )
+    if keyframes is not None:
+        keyframes_min = compute_speed(max(0, int(keyframes)), elapsed) * 60.0
+        line += f" | {keyframes_min:.1f} keyframes/min"
     if note:
         line += f"  {note}"
     return line
@@ -222,6 +260,11 @@ class ProgressReporter:
         self._last_report: float | None = None
         self._total = 0
         self._completed = 0
+        #: Units already complete when the run started (resume offset), used so
+        #: speed/ETA reflect this run's pace, not a resumed session's history.
+        self._initial_completed = 0
+        #: Cumulative keyframes processed (optional, for a keyframes/min rate).
+        self._keyframes: int | None = None
         #: Stage accumulator; callers may record stage timings into it.
         self.stages = StageTimer()
 
@@ -244,16 +287,37 @@ class ProgressReporter:
         self._last_report = self._begin_time
 
     def set_total(self, total: int, completed: int = 0) -> None:
-        """Set the expected total and the already-completed count."""
+        """Set the expected total and the already-completed count.
+
+        ``completed`` is the resume offset: units already finished in a prior
+        session. Speed and ETA are computed from work done after this offset so
+        a resumed run does not show a fresh-run estimate.
+        """
         self._total = max(0, int(total))
         self._completed = max(0, int(completed))
+        self._initial_completed = max(0, int(completed))
 
-    def update(self, completed: int, *, note: str | None = None) -> None:
-        """Report progress for ``completed`` units (throttled)."""
+    def update(
+        self,
+        completed: int,
+        *,
+        note: str | None = None,
+        keyframes: int | None = None,
+    ) -> None:
+        """Report progress for ``completed`` units (throttled).
+
+        ``completed`` counts total units including the resume offset. When
+        ``keyframes`` is provided it is the cumulative keyframe count, used to
+        render an optional ``keyframes/min`` figure.
+        """
         if not self._started or self._mode == "off":
             self._completed = max(0, int(completed))
+            if keyframes is not None:
+                self._keyframes = max(0, int(keyframes))
             return
         self._completed = max(0, int(completed))
+        if keyframes is not None:
+            self._keyframes = max(0, int(keyframes))
         # The final 100% line is always rendered by finish().
         if self._total <= 0 or self._completed >= self._total:
             return
@@ -282,6 +346,8 @@ class ProgressReporter:
             bar=self._mode == "interactive",
             note=note,
             unit=self._unit,
+            initial_completed=self._initial_completed,
+            keyframes=self._keyframes,
         )
         if self._mode == "interactive":
             print("\r" + line, file=self._stream, end="", flush=True)

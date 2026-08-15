@@ -17,6 +17,7 @@ keeps only general-cut shots (the mode used by the adaptive sampler).
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from aic2026.image_embedder import resolve_device
@@ -68,6 +69,7 @@ class OmniShotCutShotDetector:
         self._overlap = overlap
         self._device = device
         self._model = None  # (model, model_args) cached after first load
+        self._model_load_count = 0
         self._last_fps: float | None = None
         self._last_num_frames: int | None = None
 
@@ -80,6 +82,15 @@ class OmniShotCutShotDetector:
     def last_num_frames(self) -> int | None:
         """Return the frame count of the most recently detected video."""
         return self._last_num_frames
+
+    @property
+    def model_load_count(self) -> int:
+        """Return how many times the OmniShotCut model has been loaded.
+
+        A value of ``1`` across many detected videos proves the model is
+        loaded once per detector and reused, not reloaded per video.
+        """
+        return self._model_load_count
 
     def load(self) -> str:
         """Load the model eagerly and return the resolved device.
@@ -102,6 +113,7 @@ class OmniShotCutShotDetector:
         path = Path(video_path)
         if not path.is_file():
             raise FileNotFoundError(f"video file does not exist: {path}")
+        started = time.monotonic()
         model, model_args = self._ensure_model()
         import numpy as np
 
@@ -119,10 +131,11 @@ class OmniShotCutShotDetector:
             return []
         shots = [Shot(start_frame=int(start), end_frame=int(end) - 1) for start, end in ranges]
         logger.info(
-            "OmniShotCut detected %d shots in %s (%d frames)",
+            "OmniShotCut detected %d shots in %s (%d frames, %.1fs)",
             len(shots),
             path.name,
             num_frames,
+            time.monotonic() - started,
         )
         return shots
 
@@ -174,7 +187,8 @@ class OmniShotCutShotDetector:
         model.to(device)
         model.eval()
         self._model = (model, model_args)
-        logger.info("OmniShotCut model loaded on device=%s", device)
+        self._model_load_count += 1
+        logger.info("OmniShotCut model loaded on device=%s (load #%d)", device, self._model_load_count)
         return self._model
 
     def _decode_video(self, path: Path, model_args: object) -> object:

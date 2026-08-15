@@ -186,6 +186,42 @@ class TestExtractKeyframesAdaptive:
             assert csv.is_file()
             assert csv.read_text(encoding="utf-8").strip().splitlines()[0] == "n,pts_time,fps,frame_idx"
 
+    def test_detector_created_once_for_multiple_videos(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shot detector (and its model) is built once and reused.
+
+        A two-video run must call the detector factory exactly once; the shared
+        detector instance must then be reused for both videos.
+        """
+        from aic2026 import keyframe_extraction as ke
+        from aic2026.shot_detection.synthetic import SyntheticShotDetector
+
+        video_dir = tmp_path / "videos"
+        video_dir.mkdir()
+        entries = []
+        for vid in ("L21_V001", "L21_V002"):
+            path = _write_video(video_dir, vid, num_frames=500, shots=[(0, 499)])
+            entries.append(VideoEntry(video_id=vid, path=str(path), num_frames=500))
+        videos_path = video_dir / "videos.json"
+        save_video_manifest(videos_path, VideoManifest(schema_version="1.0", videos=tuple(entries)))
+
+        created: list[SyntheticShotDetector] = []
+
+        def counting_factory(name: str, **kwargs: object) -> SyntheticShotDetector:
+            detector = SyntheticShotDetector()
+            created.append(detector)
+            return detector
+
+        monkeypatch.setattr(ke, "create_shot_detector", counting_factory)
+        output_dir = tmp_path / "out"
+        extract_keyframes(videos_path, output_dir, _adaptive_config())
+
+        assert len(created) == 1, f"expected one detector instance, got {len(created)}"
+        detector = created[0]
+        assert detector.last_num_frames is not None
+        assert detector.last_fps is not None
+
 
 def _load_records(path: Path) -> list[dict]:
     if not path.is_file():

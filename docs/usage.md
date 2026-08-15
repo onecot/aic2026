@@ -978,6 +978,7 @@ scripts/merge_embedding_shards.py - validate + merge completed shards (Section 1
 scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 20).
 scripts/verify_video_split.py - verify a video split before distributing workers (Section 20).
 scripts/extract_keyframes.py - resumable keyframe extraction: DAKE-inspired fixed-budget or OmniShotCut adaptive (Section 20).
+scripts/verify_keyframe_extraction.py - verify a completed extraction artifact before upload (Section 20).
 scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 20).
 scripts/build_video_manifest.py - build the canonical videos.json inventory (Section 19).
 scripts/create_experiment_manifest.py - record experiment metadata (Section 21).
@@ -2322,29 +2323,43 @@ on macOS, Linux, and Windows PowerShell.
 
 #### Keyframes (`outputs/keyframes_worker_000/`)
 
+Verify the extraction artifact with the dedicated verifier (mirrors the
+`verify_video_split` check you ran on the input):
+
 ```bash
-python - <<'PY'
-import json
-from pathlib import Path
-
-d = Path("outputs/keyframes_worker_000")
-frames = d / "frames.ndjson"
-manifest = d / "manifest.json"
-
-assert frames.is_file() and frames.stat().st_size > 0, "frames.ndjson missing or empty"
-assert manifest.is_file(), "manifest.json missing"
-
-seen = {}
-for line in frames.open():
-    r = json.loads(line)
-    key = (r["keyframe"]["video_id"]["value"], r["frame_index"])
-    if key in seen:
-        raise SystemExit(f"DUPLICATE keyframe {key} (was line {seen[key]})")
-    seen[key] = line
-
-print(f"keyframes OK: {len(seen)} unique keyframes, manifest present")
-PY
+python scripts/verify_keyframe_extraction.py \
+  --output-dir outputs/keyframes_worker_000 \
+  --videos data/keyframe-splits/worker_000/videos.json
 ```
+
+`--videos` is optional; pass the worker's assigned `videos.json` to also check
+coverage (every assigned video present, no unexpected videos, totals match).
+The verifier reports manifest consistency (extractor/detector/sampler,
+`num_videos`, `num_keyframes`, schema version), frame-record validity
+(valid JSON, canonical fields, no duplicated `(video_id, frame_index)` keys,
+deterministic ordering), and per-video `map-keyframes/*.csv` presence and
+parseability. Exit code is 0 when valid, 1 otherwise. A complete report looks
+like:
+
+```text
+Keyframe extraction verification: PASS
+
+Videos:
+  expected: 174
+  found: 174
+
+Keyframes:
+  total: 65000
+  duplicates: 0
+
+Manifest:
+  extractor: omnishotcut_adaptive
+  detector: omnishotcut
+  sampler: adaptive_v1
+```
+
+(`verify_keyframe_extraction` lives in
+`aic2026.keyframe_extraction_verify`.)
 
 #### Embeddings (`outputs/embeddings_worker_000/`)
 

@@ -1,0 +1,491 @@
+"""Network-free tests for the optional Jina CLIP backend."""
+
+from __future__ import annotations
+
+from contextlib import nullcontext
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+
+from aic2026.embeddings import Embedding, validate_query_compatibility
+from aic2026.image_embedder import DEFAULT_PRETRAINED
+from aic2026.model_backends import jina
+from aic2026.model_backends.jina import (
+    DEFAULT_CHECKPOINT,
+    JinaClipConfig,
+    JinaClipEncoder,
+    JinaClipImageEmbedder,
+    JinaClipRuntimeError,
+)
+
+
+class _Tensor:
+    """Minimal Torch-tensor stand-in used to test the backend boundary."""
+
+    def __init__(self, values: Any) -> None:
+        self.values = np.asarray(values, dtype=np.float32)
+        self.device: str | None = None
+
+    def to(self, device: str) -> _Tensor:
+        self.device = device
+        return self
+
+    def detach(self) -> _Tensor:
+        return self
+
+    def cpu(self) -> _Tensor:
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return self.values
+
+
+@dataclass
+class _Availability:
+    available: bool
+
+    def is_available(self) -> bool:
+        return self.available
+
+
+class _FakeTorch:
+    def __init__(self, *, cuda_available: bool = False, mps_available: bool = False) -> None:
+        self.cuda = _Availability(cuda_available)
+        self.backends = type("Backends", (), {"mps": _Availability(mps_available)})()
+
+    @staticmethod
+    def inference_mode() -> Any:
+        return nullcontext()
+
+
+class _Encoded:
+    """Stand-in for a processor output carrying the batch size."""
+
+    def __init__(self, num_items: int) -> None:
+        self._num_items = num_items
+
+    def to(self, device: str) -> dict[str, object]:
+        return {"num_items": self._num_items, "device": device}
+
+
+class _FakeProcessor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, **kwargs: object) -> _Encoded:
+        self.calls.append(kwargs)
+        if "text" in kwargs:
+            return _Encoded(len(kwargs["text"]))  # type: ignore[arg-type]
+        return _Encoded(len(kwargs["images"]))  # type: ignore[arg-type]
+
+
+class _FakeModel:
+    def __init__(self) -> None:
+        self.config = type("Config", (), {"projection_dim": 3})()
+        self.evaluated = False
+        self.placement: list[str] = []
+        self.last_input_device: str | None = None
+
+    def eval(self) -> None:
+        self.evaluated = True
+
+    def to(self, device: str) -> _FakeModel:
+        self.placement.append(device)
+        return self
+
+    def _out(self, kwargs: dict[str, object]) -> _Tensor:
+        self.last_input_device = kwargs.get("device")
+        num_items = int(kwargs["num_items"])  # type: ignore[arg-type]
+        rows = np.array([[float(i), float(i) + 1.0, float(i) + 2.0] for i in range(num_items)])
+        return _Tensor(rows)
+
+    def get_text_features(self, **kwargs: object) -> _Tensor:
+        return self._out(kwargs)
+
+    def get_image_features(self, **kwargs: object) -> _Tensor:
+        return self._out(kwargs)
+
+
+class _FakeTransformers:
+    """Stand-in for the ``transformers`` module with ``AutoModel``/``AutoProcessor``."""
+
+    def __init__(self) -> None:
+        self.model = _FakeModel()
+        self.processor = _FakeProcessor()
+        self.loaded: list[tuple[str, str, dict[str, object]]] = []
+        self.AutoModel = type(
+            "AutoModel",
+            (),
+            {"from_pretrained": staticmethod(self._load_model)},
+        )
+        self.AutoProcessor = type(
+            "AutoProcessor",
+            (),
+            {"from_pretrained": staticmethod(self._load_processor)},
+        )
+
+    def _load_model(self, pretrained: str, **kwargs: object) -> _FakeModel:
+        self.loaded.append(("model", pretrained, kwargs))
+        return self.model
+
+    def _load_processor(self, pretrained: str, **kwargs: object) -> _FakeProcessor:
+        self.loaded.append(("processor", pretrained, kwargs))
+        return self.processor
+
+
+def _config(**overrides: str) -> JinaClipConfig:
+    values = {
+        "backend": "jina-clip",
+        "model_name": "test-model",
+        "pretrained": "test-checkpoint",
+        "device": "auto",
+        "precision": "fp32",
+        "normalization": "l2",
+        "preprocessing_id": "test-preprocess-v1",
+        "tokenizer_id": "test-tokenizer-v1",
+    }
+    values.update(overrides)
+    return JinaClipConfig(**values)
+
+
+def _encoder(
+    monkeypatch: pytest.MonkeyPatch,
+    transformers: _FakeTransformers | None = None,
+) -> tuple[JinaClipEncoder, _FakeTransformers]:
+    fake_transformers = transformers or _FakeTransformers()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    return JinaClipEncoder(_config()), fake_transformers
+
+
+def test_missing_optional_runtime_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing Jina runtime dependency fails with an actionable message."""
+    with pytest.raises(JinaClipRuntimeError, match=r"\.\[jina\]"):
+        monkeypatch.setattr(
+            jina,
+            "import_module",
+            lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)),
+        )
+        jina._load_dependencies()
+
+
+def test_missing_runtime_reports_each_missing_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-flight check names exactly which required packages are absent."""
+    monkeypatch.setattr(jina, "REQUIRED_RUNTIME_PACKAGES", ("alpha", "beta", "gamma"))
+
+    def selective_import(name: str) -> object:
+        if name == "beta":
+            raise ModuleNotFoundError(name)
+        return object()
+
+    monkeypatch.setattr(jina, "import_module", selective_import)
+    with pytest.raises(JinaClipRuntimeError, match=r"missing packages: beta"):
+        jina._load_dependencies()
+
+
+def test_required_runtime_packages_declared_in_pyproject() -> None:
+    """Every package the remote modeling code imports is in the jina extra."""
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = repo_root / "pyproject.toml"
+    assert pyproject.is_file(), f"pyproject.toml not found at {pyproject}"
+    text = pyproject.read_text(encoding="utf-8")
+    section = text.split("jina = [", 1)[1].split("]", 1)[0]
+    declared = {line.strip().strip('",') for line in section.splitlines() if line.strip()}
+    for package in jina.REQUIRED_RUNTIME_PACKAGES:
+        dist_name = {"PIL": "Pillow"}.get(package, package)
+        assert any(line.startswith(f"{dist_name}") for line in declared), (
+            f"{package} missing from the jina extra in pyproject.toml"
+        )
+
+
+def test_transformers_version_is_upper_bounded_in_pyproject() -> None:
+    """The jina extra must cap transformers below 5.x: the remote modeling code
+    imports ``clip_loss`` from ``transformers.models.clip.modeling_clip``, which
+    was removed after transformers 5.5.0."""
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = repo_root / "pyproject.toml"
+    assert pyproject.is_file(), f"pyproject.toml not found at {pyproject}"
+    text = pyproject.read_text(encoding="utf-8")
+    section = text.split("jina = [", 1)[1].split("]", 1)[0]
+    declared = {line.strip().strip('",') for line in section.splitlines() if line.strip()}
+    transformers_specs = sorted(
+        line for line in declared if line.startswith("transformers") or line.startswith("transformers ")
+    )
+    assert transformers_specs, "transformers missing from the jina extra in pyproject.toml"
+    for spec in transformers_specs:
+        bounds = [part for part in spec.split(",") if part.startswith("<")]
+        assert any(bound.lstrip("<").startswith("5") for bound in bounds), (
+            f"jina extra must cap transformers below 5.x (clip_loss was removed in "
+            f"v5.6.0); got {spec}"
+        )
+
+
+def test_backend_initialization_and_embedding_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Initialization loads the runtime with trust_remote_code and declares its space."""
+    encoder, fake_transformers = _encoder(monkeypatch)
+    assert fake_transformers.model.evaluated
+    assert fake_transformers.loaded[0] == ("model", "test-checkpoint", {"trust_remote_code": True})
+    assert fake_transformers.loaded[1] == ("processor", "test-checkpoint", {"trust_remote_code": True})
+    assert encoder.embedding_space.backend == "jina-clip"
+    assert encoder.embedding_space.model_id == "test-model"
+    assert encoder.embedding_space.checkpoint_id == "test-checkpoint"
+    assert encoder.embedding_space.embedding_dim == 3
+    assert encoder.embedding_space.output_dtype == "float32"
+    assert encoder.embedding_space.normalization == "l2"
+    assert "test-preprocess-v1" in encoder.embedding_space.preprocessing_id
+    assert "test-tokenizer-v1" in encoder.embedding_space.preprocessing_id
+
+
+def test_single_text_and_image_encoding_share_compatible_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single-modality protocol methods return normalized contract values."""
+    encoder, _ = _encoder(monkeypatch)
+    text = encoder.encode_text("tiny text")
+    image = encoder.encode_image("tiny image")
+    assert isinstance(text, Embedding)
+    assert text.kind == "text"
+    assert image.kind == "image"
+    assert text.space == image.space == encoder.embedding_space
+    assert text.vector.dtype == np.float32
+    assert image.shape == (3,)
+    assert np.linalg.norm(text.vector) == pytest.approx(1.0, rel=1e-6)
+    assert np.linalg.norm(image.vector) == pytest.approx(1.0, rel=1e-6)
+    validate_query_compatibility(text, image.space)
+
+
+def test_batched_text_and_image_encoding_preserve_input_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Batch helpers encode multiple values without changing their shared space."""
+    encoder, _ = _encoder(monkeypatch)
+    texts = encoder.encode_text_batch(["a", "longer"])
+    images = encoder.encode_image_batch(["x", "longer-image"])
+    assert [item.kind for item in texts] == ["text", "text"]
+    assert [item.kind for item in images] == ["image", "image"]
+    assert [item.space for item in texts + images] == [encoder.embedding_space] * 4
+    assert not np.array_equal(texts[0].vector, texts[1].vector)
+    assert not np.array_equal(images[0].vector, images[1].vector)
+
+
+def test_precision_controls_output_dtype(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configured fp16 output is represented consistently in metadata and vectors."""
+    encoder, _ = _encoder(monkeypatch)
+    fp16_encoder = JinaClipEncoder(_config(precision="fp16"))
+    assert fp16_encoder.embedding_space.output_dtype == "float16"
+    assert fp16_encoder.encode_text("text").vector.dtype == np.float16
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"backend": "openclip"},
+        {"device": "invalid"},
+        {"precision": "bf16"},
+        {"normalization": "unknown"},
+        {"model_name": ""},
+        {"pretrained": ""},
+    ],
+)
+def test_invalid_configuration_is_rejected(overrides: dict[str, str]) -> None:
+    """Unsupported configuration values fail before model loading."""
+    with pytest.raises(ValueError):
+        _config(**overrides)
+
+
+def test_unavailable_requested_device_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unavailable accelerator is reported instead of silently falling back."""
+    fake_transformers = _FakeTransformers()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    with pytest.raises(ValueError, match="not available"):
+        JinaClipEncoder(_config(device="cuda"))
+
+
+def test_auto_device_prefers_available_mps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto resolution supports MPS when it is the available accelerator."""
+    fake_transformers = _FakeTransformers()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(mps_available=True), fake_transformers),
+    )
+    assert JinaClipEncoder(_config()).device == "mps"
+
+
+@pytest.mark.parametrize(
+    ("torch_factory", "expected_device"),
+    [
+        (lambda: _FakeTorch(), "cpu"),
+        (lambda: _FakeTorch(mps_available=True), "mps"),
+        (lambda: _FakeTorch(cuda_available=True), "cuda"),
+    ],
+)
+def test_model_is_moved_to_resolved_device(
+    monkeypatch: pytest.MonkeyPatch,
+    torch_factory: Any,
+    expected_device: str,
+) -> None:
+    """Model weights are placed on the resolved device before inference."""
+    fake_transformers = _FakeTransformers()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (torch_factory(), fake_transformers),
+    )
+    encoder = JinaClipEncoder(_config())
+    assert encoder.device == expected_device
+    assert fake_transformers.model.placement == [expected_device]
+    assert fake_transformers.model.evaluated
+
+
+@pytest.mark.parametrize(
+    ("torch_factory", "expected_device"),
+    [
+        (lambda: _FakeTorch(), "cpu"),
+        (lambda: _FakeTorch(mps_available=True), "mps"),
+        (lambda: _FakeTorch(cuda_available=True), "cuda"),
+    ],
+)
+def test_inference_does_not_mix_input_and_model_devices(
+    monkeypatch: pytest.MonkeyPatch,
+    torch_factory: Any,
+    expected_device: str,
+) -> None:
+    """Encoded inputs are moved to the same device the model was placed on."""
+    fake_transformers = _FakeTransformers()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (torch_factory(), fake_transformers),
+    )
+    encoder = JinaClipEncoder(_config())
+    encoder.encode_image_batch(["a", "b"])
+    encoder.encode_text_batch(["a query"])
+    assert fake_transformers.model.placement == [expected_device]
+    assert fake_transformers.model.last_input_device == expected_device
+
+
+def test_batch_input_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty and malformed batch inputs fail clearly."""
+    encoder, _ = _encoder(monkeypatch)
+    with pytest.raises(ValueError, match="non-empty"):
+        encoder.encode_text_batch([])
+    with pytest.raises(ValueError, match="non-empty"):
+        encoder.encode_image_batch([])
+    with pytest.raises(ValueError, match="non-empty strings"):
+        encoder.encode_text_batch([""])
+
+
+def test_shape_mismatch_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model output that violates the declared dimension fails clearly."""
+    fake_transformers = _FakeTransformers()
+    fake_transformers.model.get_image_features = lambda **kwargs: _Tensor(
+        np.zeros((int(kwargs["num_items"]), 4), dtype=np.float32)  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    encoder = JinaClipEncoder(_config())
+    with pytest.raises(ValueError, match="output shape"):
+        encoder.encode_image_batch(["a", "b"])
+
+
+def test_zero_norm_embedding_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A zero-norm model output cannot be L2-normalized and fails clearly."""
+    fake_transformers = _FakeTransformers()
+    fake_transformers.model.get_image_features = lambda **kwargs: _Tensor(
+        np.zeros((int(kwargs["num_items"]), 3), dtype=np.float32)  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    encoder = JinaClipEncoder(_config())
+    with pytest.raises(ValueError, match="zero-norm"):
+        encoder.encode_image_batch(["a"])
+
+
+def test_embedding_dim_falls_back_to_text_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When projection_dim is absent, the text config dimension is used."""
+    fake_transformers = _FakeTransformers()
+    fake_transformers.model.config = type(
+        "Config",
+        (),
+        {"text_config": type("TextConfig", (), {"hidden_size": 5})()},
+    )()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    assert JinaClipEncoder(_config()).embedding_space.embedding_dim == 5
+
+
+def test_embedding_dim_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model without any declared dimension fails clearly during init."""
+    fake_transformers = _FakeTransformers()
+    fake_transformers.model.config = type("Config", (), {})()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    with pytest.raises(ValueError, match="embedding dimension"):
+        JinaClipEncoder(_config())
+
+
+# ------------------------------------------------------------------ image embedder adapter
+
+
+def _adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    **kwargs: str,
+) -> tuple[JinaClipImageEmbedder, _FakeTransformers]:
+    fake_transformers = _FakeTransformers()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    return JinaClipImageEmbedder(**kwargs), fake_transformers
+
+
+def test_adapter_exposes_identity_and_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The adapter presents a stable model identity and the resolved device."""
+    adapter, _ = _adapter(monkeypatch, model_name="jina-clip-v2", pretrained="jinaai/jina-clip-v2")
+    assert adapter.model_name == "jina-clip:jina-clip-v2:jinaai/jina-clip-v2"
+    assert adapter.embedding_dim == 3
+    assert adapter.device == "cpu"
+    assert adapter.embedding_space.backend == "jina-clip"
+
+
+def test_adapter_encode_images_stacks_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adapter batch encoding returns a stacked float array in input order."""
+    adapter, _ = _adapter(monkeypatch, model_name="jina-clip-v2", pretrained="jinaai/jina-clip-v2")
+    vectors = adapter.encode_images(["a", "longer-image"])
+    assert isinstance(vectors, np.ndarray)
+    assert vectors.shape == (2, 3)
+    assert vectors.dtype == np.float32
+    assert not np.array_equal(vectors[0], vectors[1])
+
+
+def test_adapter_uses_jina_default_checkpoint_for_openclip_pretrained(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A spec resolved against the OpenCLIP default checkpoint loads Jina's default."""
+    _, fake_transformers = _adapter(monkeypatch, model_name="jina-clip-v2", pretrained=DEFAULT_PRETRAINED)
+    assert fake_transformers.loaded[0] == ("model", DEFAULT_CHECKPOINT, {"trust_remote_code": True})
+
+
+def test_adapter_uses_jina_default_model_and_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Omitting model/checkpoint falls back to Jina CLIP v2 defaults."""
+    adapter, fake_transformers = _adapter(monkeypatch)
+    assert fake_transformers.loaded[0] == ("model", DEFAULT_CHECKPOINT, {"trust_remote_code": True})
+    assert adapter.model_name == f"jina-clip:{jina.DEFAULT_MODEL}:{DEFAULT_CHECKPOINT}"
