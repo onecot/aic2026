@@ -976,6 +976,7 @@ scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section
 scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
 scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
 scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 20).
+scripts/verify_video_split.py - verify a video split before distributing workers (Section 20).
 scripts/extract_keyframes.py - resumable keyframe extraction: DAKE-inspired fixed-budget or OmniShotCut adaptive (Section 20).
 scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 20).
 scripts/build_video_manifest.py - build the canonical videos.json inventory (Section 19).
@@ -1638,6 +1639,24 @@ Each video is kept intact and assigned whole to the least-loaded worker
 absent). The split is deterministic (same input + same `--num-workers` =>
 identical splits) and never duplicates or drops videos. Re-running into an
 existing split fails unless `--overwrite` is given.
+
+### Step 1b: verify the split (before distributing workers)
+
+Validate that a split directory is internally consistent before copying
+`worker_<id>` inputs to machines (the source `videos.json` is not required):
+
+```bash
+python scripts/verify_video_split.py --split-dir data/keyframe-splits/
+```
+
+Prints per-worker video/frame counts and a summary (`Total videos`, `Unique
+videos`, `Duplicates`, `Total frames`). Exit code is 0 when valid and 1 when
+any check fails. Checks: `split_manifest.json` exists and parses; every
+recorded `worker_<id>/videos.json` exists and parses; total videos and frames
+match `split_manifest.json`; no `video_id` is duplicated or missing across
+workers. Verification logic lives in
+`aic2026.keyframe_extraction_split.verify_video_split` and only reads the
+split directory.
 
 ### Step 2: extract (resumable)
 

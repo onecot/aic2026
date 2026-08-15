@@ -70,6 +70,12 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    """Read and return a JSON object from ``path``."""
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def worker_dir_name(worker_id: int) -> str:
     """Return the deterministic ``worker_<id>`` directory name.
 
@@ -317,3 +323,263 @@ def split_video_manifest(
         videos_path,
     )
     return split_manifest
+
+
+@dataclass(frozen=True)
+class SplitVerificationIssue:
+    """One problem found while verifying a split.
+
+    Fields:
+        - worker_id: worker identifier (``None`` when the issue is split-wide).
+        - message: human-readable description of the problem.
+    """
+
+    worker_id: int | None
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe dict."""
+        return {"worker_id": self.worker_id, "message": self.message}
+
+
+@dataclass(frozen=True)
+class SplitWorkerVerification:
+    """Per-worker video/frame counts from one verified split.
+
+    Fields:
+        - worker_id: worker identifier.
+        - num_videos: number of videos in the worker manifest.
+        - num_frames: sum of ``num_frames`` (1 per video when unknown).
+        - manifest_found: whether ``worker_<id>/videos.json`` was found.
+    """
+
+    worker_id: int
+    num_videos: int
+    num_frames: int
+    manifest_found: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe dict."""
+        return {
+            "worker_id": self.worker_id,
+            "num_videos": self.num_videos,
+            "num_frames": self.num_frames,
+            "manifest_found": self.manifest_found,
+        }
+
+
+@dataclass(frozen=True)
+class SplitVerificationReport:
+    """Result of verifying one split directory.
+
+    Fields:
+        - split_dir: the split directory that was verified.
+        - valid: True when no issues were found.
+        - issues: every problem found (empty when ``valid``).
+        - workers: per-worker counts in worker order.
+        - total_videos: total videos across all worker manifests.
+        - unique_videos: distinct video ids across all worker manifests.
+        - duplicates: video ids appearing in more than one worker manifest.
+        - total_frames: sum of ``num_frames`` (1 per video when unknown).
+    """
+
+    split_dir: str
+    valid: bool
+    issues: tuple[SplitVerificationIssue, ...]
+    workers: tuple[SplitWorkerVerification, ...]
+    total_videos: int
+    unique_videos: int
+    duplicates: int
+    total_frames: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe dict."""
+        return {
+            "split_dir": self.split_dir,
+            "valid": self.valid,
+            "issues": [issue.to_dict() for issue in self.issues],
+            "workers": [worker.to_dict() for worker in self.workers],
+            "total_videos": self.total_videos,
+            "unique_videos": self.unique_videos,
+            "duplicates": self.duplicates,
+            "total_frames": self.total_frames,
+        }
+
+
+def _frame_weight(entry: VideoEntry) -> int:
+    """Return the split weight of a video entry (``num_frames`` or 1)."""
+    return entry.num_frames if entry.num_frames is not None else 1
+
+
+def verify_video_split(split_dir: Path | str) -> SplitVerificationReport:
+    """Verify that a split directory is internally consistent.
+
+    Checks:
+        - ``split_manifest.json`` exists and parses;
+        - every ``worker_<id>/videos.json`` recorded in the manifest exists
+          and parses as a valid :class:`VideoManifest`;
+        - the total videos across worker manifests equals the total recorded
+          in ``split_manifest.json``;
+        - no ``video_id`` is duplicated across workers;
+        - every ``video_id`` recorded in ``split_manifest.json`` appears in
+          exactly one worker manifest;
+        - each worker's recorded frame count matches its manifest (videos
+          without ``num_frames`` count as 1 frame, matching the split weight).
+
+    This only verifies internal consistency of the split directory: the source
+    ``videos.json`` (recorded as ``source_videos``) is not required to exist.
+
+    Expected input:
+        - split_dir: the split directory containing ``split_manifest.json``.
+
+    Returns:
+        - A :class:`SplitVerificationReport`; the CLI maps ``valid`` to its
+          exit code.
+
+    Raises:
+        - FileNotFoundError: if ``split_manifest.json`` is absent.
+    """
+    split_dir = Path(split_dir)
+    issues: list[SplitVerificationIssue] = []
+
+    split_manifest_path = split_dir / SPLIT_MANIFEST_FILENAME
+    if not split_manifest_path.is_file():
+        raise FileNotFoundError(f"split manifest not found: {split_manifest_path}")
+
+    try:
+        data = _read_json(split_manifest_path)
+        split_manifest = SplitManifest.from_dict(data)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        issues.append(SplitVerificationIssue(None, f"invalid split_manifest.json: {exc}"))
+        return SplitVerificationReport(
+            split_dir=str(split_dir),
+            valid=False,
+            issues=tuple(issues),
+            workers=(),
+            total_videos=0,
+            unique_videos=0,
+            duplicates=0,
+            total_frames=0,
+        )
+
+    seen_videos: dict[str, int] = {}
+    total_videos = 0
+    total_frames = 0
+    manifest_videos = 0
+    manifest_frames = 0
+    workers: list[SplitWorkerVerification] = []
+
+    for worker in split_manifest.workers:
+        worker_dir = split_dir / worker_dir_name(worker.worker_id)
+        worker_manifest_path = worker_dir / VIDEOS_MANIFEST_FILENAME
+        if not worker_manifest_path.is_file():
+            workers.append(
+                SplitWorkerVerification(
+                    worker_id=worker.worker_id, num_videos=0, num_frames=0, manifest_found=False
+                )
+            )
+            issues.append(
+                SplitVerificationIssue(
+                    worker.worker_id, f"worker manifest missing: {worker_manifest_path}"
+                )
+            )
+            continue
+        try:
+            worker_manifest = load_video_manifest(worker_manifest_path)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            workers.append(
+                SplitWorkerVerification(
+                    worker_id=worker.worker_id, num_videos=0, num_frames=0, manifest_found=False
+                )
+            )
+            issues.append(
+                SplitVerificationIssue(
+                    worker.worker_id, f"invalid worker manifest: {worker_manifest_path} ({exc})"
+                )
+            )
+            continue
+
+        for entry in worker_manifest.videos:
+            seen_videos[entry.video_id] = seen_videos.get(entry.video_id, 0) + 1
+        total_videos += len(worker_manifest.videos)
+        total_frames += sum(_frame_weight(entry) for entry in worker_manifest.videos)
+        workers.append(
+            SplitWorkerVerification(
+                worker_id=worker.worker_id,
+                num_videos=len(worker_manifest.videos),
+                num_frames=sum(_frame_weight(entry) for entry in worker_manifest.videos),
+                manifest_found=True,
+            )
+        )
+
+        actual_ids = {entry.video_id for entry in worker_manifest.videos}
+        recorded_ids = set(worker.video_ids)
+        if actual_ids != recorded_ids:
+            missing = sorted(recorded_ids - actual_ids)
+            extra = sorted(actual_ids - recorded_ids)
+            detail: list[str] = []
+            if missing:
+                detail.append(f"missing from manifest: {missing}")
+            if extra:
+                detail.append(f"unexpected in manifest: {extra}")
+            issues.append(
+                SplitVerificationIssue(
+                    worker.worker_id,
+                    f"videos do not match split_manifest.json ({'; '.join(detail)})",
+                )
+            )
+        if len(worker_manifest.videos) != worker.num_videos:
+            issues.append(
+                SplitVerificationIssue(
+                    worker.worker_id,
+                    f"worker has {len(worker_manifest.videos)} videos; "
+                    f"split_manifest.json records {worker.num_videos}",
+                )
+            )
+        worker_frames = sum(_frame_weight(entry) for entry in worker_manifest.videos)
+        if worker_frames != worker.estimated_frames:
+            issues.append(
+                SplitVerificationIssue(
+                    worker.worker_id,
+                    f"worker has {worker_frames} frames; "
+                    f"split_manifest.json records {worker.estimated_frames}",
+                )
+            )
+        manifest_videos += worker.num_videos
+        manifest_frames += worker.estimated_frames
+
+    duplicates = sum(count - 1 for count in seen_videos.values() if count > 1)
+    for video_id, count in sorted(seen_videos.items()):
+        if count > 1:
+            issues.append(
+                SplitVerificationIssue(
+                    None,
+                    f"video {video_id!r} appears in {count} worker manifests",
+                )
+            )
+
+    if total_videos != manifest_videos:
+        issues.append(
+            SplitVerificationIssue(
+                None,
+                f"total videos {total_videos} != split_manifest.json total {manifest_videos}",
+            )
+        )
+    if total_frames != manifest_frames:
+        issues.append(
+            SplitVerificationIssue(
+                None,
+                f"total frames {total_frames} != split_manifest.json total {manifest_frames}",
+            )
+        )
+
+    return SplitVerificationReport(
+        split_dir=str(split_dir),
+        valid=not issues,
+        issues=tuple(issues),
+        workers=tuple(workers),
+        total_videos=total_videos,
+        unique_videos=len(seen_videos),
+        duplicates=duplicates,
+        total_frames=total_frames,
+    )
