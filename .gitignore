@@ -51,4 +51,5 @@ outputs/
 *.bin
 *.pt
 *.pth
-*.onnx
+*.onnx*.npy
+experiments/*/shard/*.npy
