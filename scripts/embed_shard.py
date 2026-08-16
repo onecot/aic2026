@@ -85,8 +85,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "root directory containing the keyframes/ collection used to "
-            "resolve image paths (default: config data.raw_dir)"
+            "root directory of the keyframe image collection used to resolve "
+            "image paths: the materialized adaptive_sbd_v1 images/ layout, "
+            "falling back to a legacy keyframes/ collection (default: config "
+            "data.raw_dir)"
         ),
     )
     parser.add_argument(

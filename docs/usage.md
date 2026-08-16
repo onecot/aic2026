@@ -980,6 +980,8 @@ scripts/verify_video_split.py - verify a video split before distributing workers
 scripts/extract_keyframes.py - resumable keyframe extraction: DAKE-inspired fixed-budget or OmniShotCut adaptive (Section 20).
 scripts/verify_keyframe_extraction.py - verify a completed extraction artifact before upload (Section 20).
 scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 20).
+scripts/materialize_keyframes.py - decode selected frames into adaptive_sbd_v1 keyframe images (Section 20).
+scripts/verify_keyframe_materialization.py - verify a completed materialized keyframe artifact (Section 20).
 scripts/build_video_manifest.py - build the canonical videos.json inventory (Section 19).
 scripts/create_experiment_manifest.py - record experiment metadata (Section 21).
 ```
@@ -1260,7 +1262,8 @@ python scripts/embed_shard.py \
 Arguments: `--frames` (canonical frames.ndjson), `--output-dir`, `--model`
 (default: the config's OpenCLIP model), `--device auto|cuda|mps|cpu` (default
 `auto`), `--batch-size` (default 32), `--max-frames` (testing/subset),
-`--worker-id` (default 0), `--keyframes-dir` (default: config `data.raw_dir`),
+`--worker-id` (default 0), `--keyframes-dir` (default: config `data.raw_dir`;
+resolves images via the `images/` layout or the legacy `keyframes/` fallback),
 `--precision fp32|fp16`, and `--progress auto|on|off` (default `auto`). The CLI
 prints the resolved device and model identity before embedding.
 
@@ -1604,15 +1607,18 @@ self-sufficient, this repository ships a lightweight, DAKE-inspired extractor
 (derived from our own implementation, now at V2) that derives the canonical
 keyframe artifact from raw video files, producing the same `frames.ndjson`
 records and `map-keyframes/<VIDEO_ID>.csv` files the embedding/retrieval
-pipeline already consumes. It is a drop-in replacement for the BTC keyframe
-source: no retrieval, scoring, evaluation, index, or embedding code needs to
-change.
+pipeline already consumes. A subsequent materialization stage decodes the
+selected frames into our own image collection, so the embedding step no longer
+depends on the BTC-provided keyframe images. It is a drop-in replacement for
+the BTC keyframe source: no retrieval, scoring, evaluation, index, or embedding
+code needs to change.
 
 ```text
-1. split    scripts/split_keyframe_extraction_shards.py   (once, any machine)
-2. extract  scripts/extract_keyframes.py                  (one worker/machine)
-3. merge    scripts/merge_keyframe_shards.py              (once, any machine)
-4. embed    scripts/embed_shard.py                        (unchanged, Section 16)
+1. split       scripts/split_keyframe_extraction_shards.py   (once, any machine)
+2. extract     scripts/extract_keyframes.py                  (one worker/machine)
+3. merge       scripts/merge_keyframe_shards.py              (once, any machine)
+4. materialize scripts/materialize_keyframes.py              (once, any machine)
+5. embed       scripts/embed_shard.py                        (unchanged, Section 16)
 ```
 
 ### Input: video manifest (`videos.json`)
@@ -1792,6 +1798,81 @@ shards share the same extractor, scorer, frame reader, and configuration,
 rejects any keyframe or video appearing in more than one shard, and rebuilds
 `map-keyframes/*.csv` deterministically from the merged records so the maps
 are always consistent with `frames.ndjson`.
+
+Verify the merged artifact before using it downstream (the verifier detects it
+as `merged` via the `source_shards` field and checks the shard list, counts,
+uniqueness, ordering, and maps):
+
+```bash
+python scripts/verify_keyframe_extraction.py \
+  --output-dir data/keyframes/merged
+```
+
+### Step 3b: materialize the keyframe images (replaces the BTC keyframe collection)
+
+Extraction and merge write only timing records. Before embedding, the selected
+frames must exist as actual image files. `materialize_keyframes.py` decodes
+each selected frame from its original mp4 and writes the `adaptive_sbd_v1`
+image artifact:
+
+```bash
+python scripts/materialize_keyframes.py \
+  --videos data/interim/videos/videos.json \
+  --frames data/keyframes/merged/frames.ndjson \
+  --output-dir data/keyframes-images/merged \
+  --video-root /path/to/videos
+```
+
+`--video-root` is required whenever the manifest's video paths are relative and
+the videos are not at the recorded `source_dir` (same rule as Step 2). This
+output replaces the BTC-provided keyframe image collection as the embedding
+step's image source.
+
+Output (`data/keyframes-images/merged/`):
+
+- `images/<video_id>/000001.jpg` — one JPEG per record, named by
+  `keyframe_ordinal` (zero-padded to 6 digits). The record with ordinal `N`
+  maps to `images/<video_id>/<N:06d>.jpg`;
+- `frames.ndjson` — a byte copy of the validated input records;
+- `manifest.json` — versioned metadata (`artifact_id` is
+  `adaptive_sbd_v1`, source inputs, counts, image format, `jpeg_quality`).
+
+The artifact is assembled in a sibling `.staging` directory and moved into
+place only after an internal verification passes: every `frames.ndjson` record
+has an image, no image is missing, and the image count matches the records. A
+partial or failed run never looks like a valid artifact, and re-running the
+same command against a complete, matching output is a no-op. `--overwrite`
+rebuilds from scratch.
+
+Verify the delivered artifact before using it as the embedding image source
+(independent of materialization internals; checks the manifest, the canonical
+frame records, and image coverage):
+
+```bash
+python scripts/verify_keyframe_materialization.py \
+  --output-dir data/keyframes-images/merged
+```
+
+Passing run:
+
+```text
+Keyframe materialization verification: PASS
+
+Artifact:
+  type: adaptive_sbd_v1
+
+Keyframes:
+  records: 148322
+  images: 148322
+  missing: 0
+  unexpected: 0
+
+OK: materialized keyframe artifact is valid
+```
+
+A failing run prints each failed check as `[section] message` and exits with
+code 1 (exit 0 on success). This mirrors how Step 2/merge results are verified
+and can be run on any machine without ffmpeg or media files.
 
 ### Adaptive extractor (OmniShotCut shots + per-shot sampling)
 
@@ -2033,15 +2114,11 @@ project/
 ├── data/
 │   ├── raw/
 │   │   ├── aic2026_batch1/
-│   │   │   └── keyframes/               # keyframe image collection (embedding input)
-│   │   │       ├── L21_V001/
-│   │   │       │   ├── 001.jpg
-│   │   │       │   └── ...
+│   │   │   └── videos/                      # raw videos (extraction input)
+│   │   │       ├── L21_V001.mp4
 │   │   │       └── ...
 │   │   │
-│   │   └── videos/                      # raw videos (extraction input)
-│   │       ├── L21_V001.mp4
-│   │       └── ...
+│   │   └── ...
 │   │
 │   └── keyframe-splits/
 │       ├── split_manifest.json
@@ -2052,10 +2129,9 @@ project/
 └── outputs/
 ```
 
-The keyframe image collection (`data/raw/aic2026_batch1/keyframes/<video_id>/NNN.jpg`)
-is a required input for the embedding step (Section 6). Extraction never writes
-images; the collection must already exist, keyed by the ordinals in your
-`frames.ndjson`.
+Extraction writes timing records only; the keyframe images the embedding step
+consumes are produced by the materialization stage (Section 20, Step 3b), not
+taken from the BTC raw data.
 
 After you run worker_000, the extraction and embedding commands (Sections 5-6)
 produce:
@@ -2270,22 +2346,26 @@ deterministically; it must be fixed for a given worker so a resumed run matches.
 
 Each keyframe record in `frames.ndjson` carries a 1-based `keyframe_ordinal`
 (its position in the extraction's new selection). The embedder resolves the
-image for that record as `<keyframes-root>/keyframes/<video_id>/NNN.jpg`
-(trying `.jpg`, then `.jpeg`, then `.png`), where `NNN` is the record's
-ordinal. The default `<keyframes-root>` is the config's `data.raw_dir`
+image for that record as `<keyframes-root>/images/<video_id>/<NNN:06d>.jpg`
+(the materialized `adaptive_sbd_v1` layout, Section 20 Step 3b). When the
+`images/` directory is absent, it falls back to the legacy BTC-style
+`<keyframes-root>/keyframes/<video_id>/NNN.jpg` layout (trying `.jpg`, then
+`.jpeg`, then `.png`), where `NNN` is the record's ordinal. The default
+`<keyframes-root>` is the config's `data.raw_dir`
 (`data/raw/aic2026_batch1`); override it with
 `--keyframes-dir /path/to/root` when the images live elsewhere.
 
 Two consequences of this contract:
 
-- **Extraction does not write image files.** `extract_keyframes.py` writes only
-  timing records (`frames.ndjson`, `map-keyframes/*.csv`, `manifest.json`); it
-  never materializes JPEGs. The images consumed by embedding must already exist
-  in a `keyframes/<video_id>/NNN.jpg` collection (keyed by the ordinals in your
-  `frames.ndjson`) before you embed.
-- **`--keyframes-dir` points at the root that *contains* the `keyframes/`
-  collection**, not at a `keyframes/` folder itself. If the collection is at
-  `/data/kf/keyframes/L21_V001/001.jpg`, pass `--keyframes-dir /data/kf`.
+- **Materialize before embedding.** `extract_keyframes.py` writes only timing
+  records (`frames.ndjson`, `map-keyframes/*.csv`, `manifest.json`); it never
+  materializes JPEGs. Run `scripts/materialize_keyframes.py` (Section 20,
+  Step 3b) first to produce the `images/<video_id>/<NNN:06d>.jpg` collection
+  your `frames.ndjson` records resolve against. The legacy `keyframes/` layout
+  is only used as a fallback when no `images/` directory exists.
+- **`--keyframes-dir` points at the root that *contains* the collection**, not
+  at an `images/` or `keyframes/` folder itself. If the materialized collection
+  is at `/data/kf/images/L21_V001/000001.jpg`, pass `--keyframes-dir /data/kf`.
 
 What you get, in `outputs/embeddings_worker_000/`:
 
@@ -2334,15 +2414,20 @@ python scripts/verify_keyframe_extraction.py \
 
 `--videos` is optional; pass the worker's assigned `videos.json` to also check
 coverage (every assigned video present, no unexpected videos, totals match).
-The verifier reports manifest consistency (extractor/detector/sampler,
-`num_videos`, `num_keyframes`, schema version), frame-record validity
-(valid JSON, canonical fields, no duplicated `(video_id, frame_index)` keys,
-deterministic ordering), and per-video `map-keyframes/*.csv` presence and
-parseability. Exit code is 0 when valid, 1 otherwise. A complete report looks
-like:
+The verifier supports both **worker** artifacts (manifest records
+`source_videos`) and **merged** artifacts produced by
+`scripts/merge_keyframe_shards.py` (manifest records `source_shards`, checked
+non-empty). It reports the artifact type, manifest consistency
+(extractor/detector/sampler, `num_videos`, `num_keyframes`, schema version),
+frame-record validity (valid JSON, canonical fields, no duplicated
+`(video_id, frame_index)` keys, deterministic ordering), and per-video
+`map-keyframes/*.csv` presence and parseability. Exit code is 0 when valid, 1
+otherwise. A complete worker report looks like:
 
 ```text
 Keyframe extraction verification: PASS
+
+Artifact type: worker
 
 Videos:
   expected: 174
@@ -2357,6 +2442,10 @@ Manifest:
   detector: omnishotcut
   sampler: adaptive_v1
 ```
+
+For a merged artifact (e.g. `outputs/keyframes_full/`), run the same command
+without `--videos`; `Artifact type: merged` is printed and the manifest's
+`source_shards` is validated.
 
 (`verify_keyframe_extraction` lives in
 `aic2026.keyframe_extraction_verify`.)

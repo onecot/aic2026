@@ -1,13 +1,20 @@
-"""Verification of a completed keyframe extraction shard.
+"""Verification of a completed keyframe extraction artifact.
 
-The extractor output artifact (``outputs/keyframes_worker_XXX/``) is verified
-for internal consistency before it is uploaded to the coordinator. This module
-checks the artifact alone (and optionally against the ``videos.json`` that was
-assigned to the worker):
+Two artifact kinds are supported:
+
+- **worker** artifacts (``outputs/keyframes_worker_XXX/``), produced by a
+  single extraction run and identified by ``source_videos`` in the manifest;
+- **merged** artifacts (e.g. ``outputs/keyframes_full/``), produced by
+  ``aic2026.keyframe_extraction_merge.merge_shards`` and identified by
+  ``source_shards`` in the manifest.
+
+The artifact is verified for internal consistency (alone, and optionally
+against the ``videos.json`` that was assigned to a worker):
 
 - ``manifest.json`` exists, parses, and records the extraction identity
   (extractor / detector / sampler for the ``omnishotcut_adaptive`` extractor,
   valid schema version, counts);
+- for merged artifacts, ``source_shards`` lists at least one source shard;
 - ``frames.ndjson`` exists, is non-empty, every line parses as a canonical
   :class:`KeyframeTiming`, contains no duplicated ``(video_id, frame_index)``
   key, and is deterministically ordered;
@@ -41,6 +48,19 @@ from aic2026.keyframe_extraction import (
     ExtractionManifest,
     load_video_manifest,
 )
+from aic2026.keyframe_extraction_merge import (
+    MERGE_MANIFEST_SCHEMA_VERSION,
+    MergeManifest,
+)
+
+#: Manifest identity of a single-worker extraction artifact.
+ARTIFACT_TYPE_WORKER = "worker"
+
+#: Manifest identity of a merged (multi-shard) artifact.
+ARTIFACT_TYPE_MERGED = "merged"
+
+#: Manifest identity when the manifest cannot be classified.
+ARTIFACT_TYPE_UNKNOWN = "unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +89,9 @@ class KeyframeExtractionVerificationReport:
 
     Fields:
         - output_dir: the artifact directory that was verified.
+        - artifact_type: ``worker`` (single extraction) or ``merged``
+          (multi-shard merge); ``unknown`` when the manifest is absent or
+          unclassifiable.
         - valid: True when no issues were found.
         - issues: every problem found (empty when ``valid``).
         - expected_videos: expected video count (from the input ``videos.json``
@@ -81,6 +104,7 @@ class KeyframeExtractionVerificationReport:
     """
 
     output_dir: str
+    artifact_type: str
     valid: bool
     issues: tuple[ExtractionVerificationIssue, ...]
     expected_videos: int
@@ -95,6 +119,7 @@ class KeyframeExtractionVerificationReport:
         """Serialize to a JSON-safe dict."""
         return {
             "output_dir": self.output_dir,
+            "artifact_type": self.artifact_type,
             "valid": self.valid,
             "issues": [issue.to_dict() for issue in self.issues],
             "expected_videos": self.expected_videos,
@@ -107,43 +132,91 @@ class KeyframeExtractionVerificationReport:
         }
 
 
+def _classify_artifact(data: dict[str, Any]) -> str:
+    """Classify a manifest payload as worker or merged.
+
+    A worker manifest records ``source_videos``; a merged manifest records
+    ``source_shards`` instead. Neither key (or an unparseable payload)
+    yields :data:`ARTIFACT_TYPE_UNKNOWN`.
+
+    Returns:
+        - :data:`ARTIFACT_TYPE_WORKER`, :data:`ARTIFACT_TYPE_MERGED`, or
+          :data:`ARTIFACT_TYPE_UNKNOWN`.
+    """
+    if "source_shards" in data:
+        return ARTIFACT_TYPE_MERGED
+    if "source_videos" in data:
+        return ARTIFACT_TYPE_WORKER
+    return ARTIFACT_TYPE_UNKNOWN
+
+
 def _read_manifest(
     output_dir: Path, issues: list[ExtractionVerificationIssue]
-) -> ExtractionManifest | None:
+) -> tuple[str, ExtractionManifest | MergeManifest | None]:
     """Parse ``manifest.json`` or record the failure.
 
     Returns:
-        - The parsed manifest, or ``None`` when missing/invalid.
+        - ``(artifact_type, manifest)``: the classified artifact type and the
+          parsed manifest, or ``(ARTIFACT_TYPE_UNKNOWN, None)`` when the file
+          is missing/invalid.
     """
     manifest_path = output_dir / MANIFEST_FILENAME
     if not manifest_path.is_file():
         issues.append(
             ExtractionVerificationIssue("artifact", f"manifest.json missing: {manifest_path}")
         )
-        return None
+        return ARTIFACT_TYPE_UNKNOWN, None
     try:
         with manifest_path.open(encoding="utf-8") as handle:
-            return ExtractionManifest.from_dict(json.load(handle))
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            data = json.load(handle)
+    except json.JSONDecodeError as exc:
         issues.append(
             ExtractionVerificationIssue("manifest", f"invalid manifest.json: {exc}")
         )
-        return None
+        return ARTIFACT_TYPE_UNKNOWN, None
+
+    artifact_type = _classify_artifact(data)
+    try:
+        if artifact_type == ARTIFACT_TYPE_MERGED:
+            manifest: ExtractionManifest | MergeManifest | None = MergeManifest.from_dict(data)
+        elif artifact_type == ARTIFACT_TYPE_WORKER:
+            manifest = ExtractionManifest.from_dict(data)
+        else:
+            issues.append(
+                ExtractionVerificationIssue(
+                    "manifest",
+                    "manifest.json is neither a worker (source_videos) nor a "
+                    "merged (source_shards) manifest",
+                )
+            )
+            return ARTIFACT_TYPE_UNKNOWN, None
+    except (KeyError, TypeError, ValueError) as exc:
+        issues.append(
+            ExtractionVerificationIssue("manifest", f"invalid manifest.json: {exc}")
+        )
+        return ARTIFACT_TYPE_UNKNOWN, None
+    return artifact_type, manifest
 
 
 def _check_manifest(
-    manifest: ExtractionManifest | None,
+    artifact_type: str,
+    manifest: ExtractionManifest | MergeManifest | None,
     issues: list[ExtractionVerificationIssue],
 ) -> None:
     """Check manifest-level consistency that does not depend on the frames."""
     if manifest is None:
         return
-    if manifest.schema_version != EXTRACTION_MANIFEST_SCHEMA_VERSION:
+    expected_version = (
+        EXTRACTION_MANIFEST_SCHEMA_VERSION
+        if artifact_type == ARTIFACT_TYPE_WORKER
+        else MERGE_MANIFEST_SCHEMA_VERSION
+    )
+    if manifest.schema_version != expected_version:
         issues.append(
             ExtractionVerificationIssue(
                 "manifest",
                 f"unsupported schema_version {manifest.schema_version!r}; "
-                f"expected {EXTRACTION_MANIFEST_SCHEMA_VERSION!r}",
+                f"expected {expected_version!r}",
             )
         )
     if manifest.extractor == "omnishotcut_adaptive":
@@ -255,7 +328,7 @@ def _check_ordering(
 def _check_coverage(
     output_dir: Path,
     records: list[KeyframeTiming],
-    manifest: ExtractionManifest | None,
+    manifest: ExtractionManifest | MergeManifest | None,
     videos_path: Path | None,
     issues: list[ExtractionVerificationIssue],
 ) -> tuple[int, int]:
@@ -312,7 +385,7 @@ def _check_coverage(
 
 
 def _check_keyframe_count(
-    manifest: ExtractionManifest | None,
+    manifest: ExtractionManifest | MergeManifest | None,
     records: list[KeyframeTiming],
     issues: list[ExtractionVerificationIssue],
 ) -> None:
@@ -405,8 +478,8 @@ def verify_keyframe_extraction(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"keyframe extraction manifest not found: {manifest_path}")
 
-    manifest = _read_manifest(output_dir, issues)
-    _check_manifest(manifest, issues)
+    artifact_type, manifest = _read_manifest(output_dir, issues)
+    _check_manifest(artifact_type, manifest, issues)
 
     records = _read_frames(output_dir, issues)
     if not records and not any(issue.section == "artifact" for issue in issues):
@@ -426,6 +499,7 @@ def verify_keyframe_extraction(
 
     return KeyframeExtractionVerificationReport(
         output_dir=str(output_dir),
+        artifact_type=artifact_type,
         valid=not issues,
         issues=tuple(issues),
         expected_videos=expected_videos,

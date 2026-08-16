@@ -46,6 +46,11 @@ from aic2026.embedding_artifact import iter_frames
 from aic2026.embedding_runner import default_image_loader
 from aic2026.embeddings import EmbeddingSpace
 from aic2026.image_embedder import ImageEmbedder
+from aic2026.keyframe_materialize import (
+    IMAGE_EXTENSION,
+    IMAGES_DIRNAME,
+    image_filename,
+)
 from aic2026.progress import ProgressReporter, create_progress_reporter
 
 #: Schema version of the shard manifest.
@@ -343,13 +348,18 @@ def keyframe_image_path(
     video_id: str,
     keyframe_ordinal: int,
 ) -> Path:
-    """Resolve the raw keyframe image path for one record.
+    """Resolve the keyframe image path for one record.
 
-    Mirrors the dataset accessor without depending on the full raw dataset
-    root, so a shard worker only needs the keyframes collection.
+    Prefers the materialized ``images/`` collection (``adaptive_sbd_v1``
+    artifact: ``images/<video_id>/<ordinal:06d>.jpg``) and falls back to the
+    legacy BTC-style ``keyframes/<video_id>/<ordinal:03d>.jpg`` layout when the
+    ``images/`` directory is absent. Mirrors the dataset accessor without
+    depending on the full raw dataset root, so a shard worker only needs the
+    keyframes collection.
 
     Expected input:
-        - keyframes_root: root directory containing a ``keyframes/`` collection.
+        - keyframes_root: root directory containing either an ``images/``
+          collection or a legacy ``keyframes/`` collection.
         - video_id: the ``L*_V*`` id.
         - keyframe_ordinal: the 1-based keyframe ordinal.
 
@@ -362,7 +372,16 @@ def keyframe_image_path(
     """
     if not isinstance(keyframe_ordinal, int) or isinstance(keyframe_ordinal, bool) or keyframe_ordinal < 1:
         raise ValueError(f"keyframe_ordinal must be a positive integer, got {keyframe_ordinal!r}")
-    directory = Path(keyframes_root) / "keyframes" / video_id
+    root = Path(keyframes_root)
+    materialized = root / IMAGES_DIRNAME / video_id / image_filename(keyframe_ordinal)
+    if materialized.is_file():
+        return materialized
+    if (root / IMAGES_DIRNAME).is_dir():
+        raise FileNotFoundError(
+            f"keyframe image missing for {video_id} ordinal {keyframe_ordinal}: "
+            f"{materialized}"
+        )
+    directory = root / "keyframes" / video_id
     for extension in ("jpg", "jpeg", "png"):
         candidate = directory / f"{keyframe_ordinal:03d}.{extension}"
         if candidate.is_file():

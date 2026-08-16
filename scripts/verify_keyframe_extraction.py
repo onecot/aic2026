@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""CLI: verify a completed keyframe extraction shard before upload.
+"""CLI: verify a completed keyframe extraction artifact before upload.
 
-Reads a worker's extraction output (``outputs/keyframes_worker_XXX/`` with
-``frames.ndjson`` + ``map-keyframes/`` + ``manifest.json``) and verifies it is
-internally consistent. When ``--videos`` (the worker's assigned ``videos.json``)
-is provided, coverage is checked against it.
+Reads an extraction output (``outputs/keyframes_worker_XXX/`` or a merged
+``outputs/keyframes_full/`` with ``frames.ndjson`` + ``map-keyframes/`` +
+``manifest.json``) and verifies it is internally consistent. Worker artifacts
+(``source_videos``) and merged artifacts (``source_shards``) are both
+supported. When ``--videos`` (a worker's assigned ``videos.json``) is
+provided, coverage is checked against it for worker artifacts.
 
 This is a thin CLI; the verification logic lives in
 ``aic2026.keyframe_extraction_verify.verify_keyframe_extraction``.
@@ -23,9 +25,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="verify_keyframe_extraction",
         description=(
-            "Validate a completed keyframe extraction artifact: manifest, "
-            "frame records, deterministic ordering, video coverage, and "
-            "per-video map-keyframes files."
+            "Validate a completed keyframe extraction artifact (worker or "
+            "merged): manifest, frame records, deterministic ordering, video "
+            "coverage, and per-video map-keyframes files."
         ),
     )
     parser.add_argument(
@@ -54,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
 
     status = "PASS" if report.valid else "FAIL"
     print(f"Keyframe extraction verification: {status}")
+    print()
+    print(f"Artifact type: {report.artifact_type}")
     print()
     print("Videos:")
     print(f"  expected: {report.expected_videos}")

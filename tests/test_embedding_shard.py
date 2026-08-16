@@ -371,6 +371,22 @@ def test_embeddings_are_mmap_readable(frames_file: Path, raw: Path, tmp_path: Pa
     assert matrix[5][1] == 1.0
 
 
+def test_shard_embeds_materialized_layout(frames_file: Path, tmp_path: Path) -> None:
+    images_root = tmp_path / "materialized"
+    for vid, ordinals in LAYOUT:
+        vid_dir = images_root / "images" / vid
+        vid_dir.mkdir(parents=True)
+        for ordinal in ordinals:
+            (vid_dir / f"{ordinal:06d}.jpg").write_bytes(
+                bytes([VIDEO_INDEX[vid], ordinal, 0])
+            )
+    out = tmp_path / "shard-materialized"
+    _, manifest = _shard(frames_file, out, images_root)
+    assert manifest.num_embeddings == 6
+    embeddings = np.load(out / EMBEDDINGS_FILENAME)
+    assert embeddings[0][0] == 1.0
+
+
 def test_missing_keyframe_image_raises(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     (raw / "keyframes" / "L21_V001").mkdir(parents=True)
@@ -389,6 +405,32 @@ def test_keyframe_image_path_resolution(raw: Path) -> None:
     assert keyframe_image_path(raw, "L21_V001", 1) == raw / "keyframes" / "L21_V001" / "001.jpg"
     with pytest.raises(FileNotFoundError):
         keyframe_image_path(raw, "L21_V001", 99)
+
+
+def test_keyframe_image_path_prefers_materialized_layout(tmp_path: Path) -> None:
+    root = tmp_path / "keyframes-root"
+    images = root / "images" / "L21_V001"
+    images.mkdir(parents=True)
+    (images / "000001.jpg").write_bytes(bytes([1, 1, 0]))
+    (images / "000002.jpg").write_bytes(bytes([2, 2, 0]))
+    assert keyframe_image_path(root, "L21_V001", 1) == images / "000001.jpg"
+    assert keyframe_image_path(root, "L21_V001", 2) == images / "000002.jpg"
+
+
+def test_keyframe_image_path_materialized_layout_missing_image(tmp_path: Path) -> None:
+    root = tmp_path / "keyframes-root"
+    (root / "images" / "L21_V001").mkdir(parents=True)
+    (root / "images" / "L21_V001" / "000001.jpg").write_bytes(bytes([1, 1, 0]))
+    with pytest.raises(FileNotFoundError, match="ordinal 99"):
+        keyframe_image_path(root, "L21_V001", 99)
+
+
+def test_keyframe_image_path_legacy_fallback_without_images(tmp_path: Path) -> None:
+    root = tmp_path / "keyframes-root"
+    legacy = root / "keyframes" / "L21_V001"
+    legacy.mkdir(parents=True)
+    (legacy / "001.jpg").write_bytes(bytes([1, 1, 0]))
+    assert keyframe_image_path(root, "L21_V001", 1) == legacy / "001.jpg"
 
 
 def test_read_frames_respects_limit(frames_file: Path) -> None:

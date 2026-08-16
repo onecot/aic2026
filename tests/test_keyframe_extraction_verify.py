@@ -21,6 +21,7 @@ from aic2026.keyframe_extraction import (
     extract_keyframes,
     save_video_manifest,
 )
+from aic2026.keyframe_extraction_merge import merge_shards
 from aic2026.keyframe_extractor import write_synthetic_video
 from aic2026.keyframe_extraction_verify import (
     KeyframeExtractionVerificationReport,
@@ -61,6 +62,17 @@ def _make_artifact(tmp_path: Path, *, videos: list[str], output_name: str = "out
     output_dir = tmp_path / output_name
     extract_keyframes(videos_path, output_dir, _adaptive_config())
     return output_dir, videos_path
+
+
+def _make_merged_artifact(tmp_path: Path, *, shards: list[list[str]]) -> Path:
+    """Build a complete merged artifact from per-shard video lists."""
+    shard_dirs: list[Path] = []
+    for idx, videos in enumerate(shards):
+        shard_dir, _ = _make_artifact(tmp_path, videos=videos, output_name=f"shard_{idx}")
+        shard_dirs.append(shard_dir)
+    output_dir = tmp_path / "merged"
+    merge_shards(shard_dirs, output_dir)
+    return output_dir
 
 
 def _records(output_dir: Path) -> list[dict[str, object]]:
@@ -222,6 +234,69 @@ class TestVerifyKeyframeExtraction:
         assert payload["found_videos"] == 1
         assert payload["total_keyframes"] > 0
 
+    def test_worker_artifact_type(self, tmp_path: Path) -> None:
+        output_dir, _ = _make_artifact(tmp_path, videos=["L21_V001"])
+        report = verify_keyframe_extraction(output_dir)
+        assert report.artifact_type == "worker"
+
+    def test_valid_merged_artifact(self, tmp_path: Path) -> None:
+        output_dir = _make_merged_artifact(
+            tmp_path, shards=[["L21_V001", "L21_V002"], ["L21_V003"]]
+        )
+        report = verify_keyframe_extraction(output_dir)
+
+        assert isinstance(report, KeyframeExtractionVerificationReport)
+        assert report.artifact_type == "merged"
+        assert report.valid is True
+        assert report.issues == ()
+        assert report.expected_videos == 3
+        assert report.found_videos == 3
+        assert report.total_keyframes > 0
+        assert report.duplicates == 0
+        assert report.extractor == "omnishotcut_adaptive"
+        assert report.detector == "synthetic"
+        assert report.sampler == "adaptive_v1"
+
+    def test_merged_artifact_missing_source_shards(self, tmp_path: Path) -> None:
+        output_dir = _make_merged_artifact(
+            tmp_path, shards=[["L21_V001", "L21_V002"], ["L21_V003"]]
+        )
+        manifest_path = output_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["source_shards"]
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        report = verify_keyframe_extraction(output_dir)
+
+        assert report.valid is False
+        assert any("source_shards" in issue.message for issue in report.issues)
+
+    def test_merged_artifact_empty_source_shards(self, tmp_path: Path) -> None:
+        output_dir = _make_merged_artifact(tmp_path, shards=[["L21_V001"]])
+        manifest_path = output_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["source_shards"] = []
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        report = verify_keyframe_extraction(output_dir)
+
+        assert report.valid is False
+        assert any("source_shards" in issue.message for issue in report.issues)
+
+    def test_merged_artifact_count_mismatch(self, tmp_path: Path) -> None:
+        output_dir = _make_merged_artifact(
+            tmp_path, shards=[["L21_V001", "L21_V002"], ["L21_V003"]]
+        )
+        manifest_path = output_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["num_keyframes"] = manifest["num_keyframes"] + 1
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        report = verify_keyframe_extraction(output_dir)
+
+        assert report.valid is False
+        assert any("num_keyframes" in issue.message for issue in report.issues)
+
 
 class TestVerifyKeyframeExtractionCli:
     def test_help(self) -> None:
@@ -260,6 +335,25 @@ class TestVerifyKeyframeExtractionCli:
         result = _run_cli("--output-dir", str(tmp_path / "does-not-exist"))
         assert result.returncode == 1
         assert "error:" in result.stderr
+
+    def test_worker_artifact_type_exits_0(self, tmp_path: Path) -> None:
+        output_dir, videos_path = _make_artifact(tmp_path, videos=["L21_V001"])
+        result = _run_cli("--output-dir", str(output_dir), "--videos", str(videos_path))
+
+        assert result.returncode == 0, result.stderr
+        assert "Artifact type: worker" in result.stdout
+
+    def test_merged_artifact_type_exits_0(self, tmp_path: Path) -> None:
+        output_dir = _make_merged_artifact(
+            tmp_path, shards=[["L21_V001", "L21_V002"], ["L21_V003"]]
+        )
+        result = _run_cli("--output-dir", str(output_dir))
+
+        assert result.returncode == 0, result.stderr
+        assert "Artifact type: merged" in result.stdout
+        assert "expected: 3" in result.stdout
+        assert "found: 3" in result.stdout
+        assert "OK: extraction artifact is valid" in result.stdout
 
 
 def test_detector_fields_required_for_adaptive(tmp_path: Path) -> None:

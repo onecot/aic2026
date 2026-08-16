@@ -24,8 +24,10 @@ Your only job is to extract keyframes from the videos assigned to you.
 > - Extraction does NOT create JPEG images.
 > - It only creates metadata (`frames.ndjson`, `map-keyframes/`) describing
 >   which frames are keyframes.
-> - The existing BTC keyframe image collection is still required later, when
->   embeddings are computed centrally.
+> - The keyframe images used for embeddings are produced centrally (after the
+>   shards are merged) by the materialization stage, which decodes the selected
+>   frames from the original videos into the `adaptive_sbd_v1` image artifact.
+>   The BTC-provided keyframe image collection is no longer needed.
 > - You only need access to the assigned raw videos.
 
 ## 2. Required inputs
@@ -157,6 +159,8 @@ per-video `map-keyframes/` files:
 ```text
 Keyframe extraction verification: PASS
 
+Artifact type: worker
+
 Videos:
   expected: 174
   found: 174
@@ -196,8 +200,14 @@ Once all workers deliver their `worker_XXX_result/keyframes/` folders:
 
 1. **Merge keyframe shards** into one canonical `frames.ndjson` /
    `map-keyframes/` artifact.
-2. **Prepare the embedding environment** on the target GPU machine
+2. **Materialize the keyframe images** with `scripts/materialize_keyframes.py`
+   (decodes the selected frames from the original videos into the
+   `adaptive_sbd_v1` image artifact), replacing the BTC keyframe collection.
+3. **Verify the materialized artifact** with
+   `scripts/verify_keyframe_materialization.py` (checks the manifest, frame
+   records, and image coverage; run on any machine without ffmpeg or media).
+4. **Prepare the embedding environment** on the target GPU machine
    (Kaggle/Modal): install the `jina` dependency group and the Jina CLIP v2
    checkpoint.
-3. **Run Jina CLIP v2 embeddings** on the merged keyframes.
-4. **Merge embeddings** into the final embedding artifact.
+5. **Run Jina CLIP v2 embeddings** on the materialized keyframe images.
+6. **Merge embeddings** into the final embedding artifact.
