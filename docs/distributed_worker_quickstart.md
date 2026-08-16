@@ -211,3 +211,6 @@ Once all workers deliver their `worker_XXX_result/keyframes/` folders:
    checkpoint.
 5. **Run Jina CLIP v2 embeddings** on the materialized keyframe images.
 6. **Merge embeddings** into the final embedding artifact.
+7. **Verify the merged embedding artifact** with `scripts/verify_embedding.py`
+   (checks the manifest and model metadata, frame records, matrix shape/dtype,
+   row counts, and that no vector is empty or NaN/Inf).

@@ -975,6 +975,7 @@ scripts/deduplicate_keyframes.py - deduplicate keyframes before split/embed (Sec
 scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section 16).
 scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
 scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
+scripts/verify_embedding.py - verify a completed embedding artifact (Section 20 Step 4).
 scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 20).
 scripts/verify_video_split.py - verify a video split before distributing workers (Section 20).
 scripts/extract_keyframes.py - resumable keyframe extraction: DAKE-inspired fixed-budget or OmniShotCut adaptive (Section 20).
@@ -1502,6 +1503,41 @@ Produces `embeddings.npy`, `frames.ndjson`, and `manifest.json`
 - guarantees `embeddings[i]` <-> `frames.ndjson[i]`.
 
 Re-running into an existing merged output fails unless `--overwrite` is given.
+
+Verify the merged embedding artifact before feeding it to the index builder
+(independent of embedding internals; checks file existence, the manifest and
+model metadata, frame records, matrix shape/dtype, and vector health):
+
+```bash
+python scripts/verify_embedding.py \
+  --output-dir data/interim/embeddings/merged
+```
+
+Passing run:
+
+```text
+Embedding verification: PASS
+
+Artifact:
+  model: openclip:ViT-L-14:laion2b_s32b_b82k
+  dim: 768
+  dtype: float16
+
+Rows:
+  embeddings: 65000
+  frames: 65000
+
+Vectors:
+  empty: 0
+  nan/inf: 0
+
+OK: embedding artifact is valid
+```
+
+A failing run prints each failed check as `[section] message` and exits with
+code 1 (exit 0 on success). The verifier accepts both the runner/merge
+`EmbeddingManifest` schema and the merge-output `MergeManifest` schema, and
+can be run on any machine without the model backend or media files.
 
 ### Step 5: build the index
 
