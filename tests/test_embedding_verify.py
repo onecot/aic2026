@@ -19,6 +19,7 @@ import pytest
 
 from aic2026.embedding_artifact import EmbeddingManifest, write_manifest
 from aic2026.embedding_merge import MERGE_MANIFEST_SCHEMA_VERSION, MergeManifest
+from aic2026.embedding_shard import SHARD_MANIFEST_SCHEMA_VERSION, ShardManifest
 from aic2026.embedding_verify import (
     EmbeddingVerificationReport,
     MODEL_ID_UNKNOWN,
@@ -102,6 +103,36 @@ def _make_merge_manifest(
     )
 
 
+def _make_shard_manifest(
+    output_dir: Path,
+    *,
+    num_rows: int,
+    dim: int = DIM,
+    dtype: str = "float32",
+    model: str = "jina-clip:jina-clip-v2:jinaai/jina-clip-v2",
+    **overrides: object,
+) -> None:
+    manifest = ShardManifest(
+        schema_version=SHARD_MANIFEST_SCHEMA_VERSION,
+        worker_id=0,
+        model=model,
+        embedding_dim=dim,
+        dtype=dtype,
+        device="cuda",
+        num_embeddings=num_rows,
+        num_videos=1,
+        source_frames="frames.ndjson",
+        embedding_space=_space(embedding_dim=dim, output_dtype=dtype),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    payload = manifest.to_dict()
+    payload.update(overrides)
+    (output_dir / "manifest.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_matrix(output_dir: Path, matrix: np.ndarray) -> None:
     np.save(output_dir / "embeddings.npy", matrix, allow_pickle=False)
 
@@ -112,6 +143,7 @@ def _make_artifact(
     rows: int = 5,
     name: str = "artifact",
     merged: bool = False,
+    shard: bool = False,
     matrix: np.ndarray | None = None,
     dtype: str = "float32",
 ) -> Path:
@@ -123,6 +155,8 @@ def _make_artifact(
     _write_frames(out / "frames.ndjson", rows)
     if merged:
         _make_merge_manifest(out, num_rows=rows)
+    elif shard:
+        _make_shard_manifest(out, num_rows=rows, dtype=dtype)
     else:
         _make_embedding_manifest(out, num_rows=rows, dtype=dtype)
     return out
@@ -272,11 +306,70 @@ class TestVerifyEmbedding:
         assert report.valid is False
         assert any("dtype (float64) != manifest dtype (float32)" in issue.message for issue in report.issues)
 
-    def test_merged_manifest_skips_dtype_check(self, tmp_path: Path) -> None:
-        out = _make_artifact(tmp_path, rows=5, merged=True, dtype="float64")
+    def test_merged_manifest_dtype_matches_embedding_space(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=5, merged=True)
         report = verify_embedding(out)
 
         assert report.valid is True
+
+    def test_merged_manifest_dtype_mismatch_caught(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=5, merged=True, dtype="float64")
+        report = verify_embedding(out)
+
+        assert report.valid is False
+        assert any("dtype (float64) != manifest dtype (float32)" in issue.message for issue in report.issues)
+
+    def test_valid_shard_manifest(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=5, shard=True)
+        report = verify_embedding(out)
+
+        assert report.valid is True
+        assert report.issues == ()
+        assert report.rows == 5
+        assert report.frames == 5
+        assert report.dim == DIM
+        assert report.dtype == "float32"
+        assert report.model_id == "jina-clip:jina-clip-v2:jinaai/jina-clip-v2"
+
+    def test_shard_manifest_dtype_mismatch_caught(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=5, shard=True, dtype="float64")
+        manifest_path = out / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["dtype"] = "float32"
+        payload["embedding_space"]["output_dtype"] = "float32"
+        manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        report = verify_embedding(out)
+
+        assert report.valid is False
+        assert any("dtype (float64) != manifest dtype (float32)" in issue.message for issue in report.issues)
+
+    def test_shard_manifest_rows_mismatch_caught(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=5, shard=True)
+        _write_frames(out / "frames.ndjson", 4)
+        report = verify_embedding(out)
+
+        assert report.valid is False
+        assert any("frames.ndjson records (4)" in issue.message for issue in report.issues)
+
+    def test_shard_manifest_model_metadata_required(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=5, shard=True)
+        manifest_path = out / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["model"] = "unknown"
+        manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+        report = verify_embedding(out)
+
+        assert report.valid is False
+        assert report.model_id == MODEL_ID_UNKNOWN
+        assert any("model metadata missing" in issue.message for issue in report.issues)
+
+    def test_shard_manifest_recognized_regardless_of_key_order(self, tmp_path: Path) -> None:
+        out = _make_artifact(tmp_path, rows=3, shard=True)
+        report = verify_embedding(out)
+
+        assert report.valid is True
+        assert report.model_id == "jina-clip:jina-clip-v2:jinaai/jina-clip-v2"
 
     def test_empty_vectors(self, tmp_path: Path) -> None:
         matrix = np.ones((5, DIM), dtype=np.float32)

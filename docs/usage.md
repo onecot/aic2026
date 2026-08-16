@@ -1535,9 +1535,12 @@ OK: embedding artifact is valid
 ```
 
 A failing run prints each failed check as `[section] message` and exits with
-code 1 (exit 0 on success). The verifier accepts both the runner/merge
-`EmbeddingManifest` schema and the merge-output `MergeManifest` schema, and
-can be run on any machine without the model backend or media files.
+code 1 (exit 0 on success). The verifier accepts all three embedding manifest
+schemas — the per-shard `ShardManifest` (written by `embed_shard.py`), the
+merge-output `MergeManifest`, and the runner's `EmbeddingManifest` — and can
+be run on any machine without the model backend or media files. It can
+therefore validate any artifact from the pipeline: a Jina/OpenCLIP worker
+shard, a merged collection, or a `build_embeddings` output.
 
 ### Step 5: build the index
 

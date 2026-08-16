@@ -21,10 +21,11 @@ any model backend:
 - the matrix dtype matches the manifest's dtype when the manifest records one;
 - no embedding vector is empty (all-zero) or contains NaN/Inf.
 
-Both artifact manifest schemas are supported: the per-shard/merged
-``EmbeddingManifest`` (``aic2026.embedding_artifact``) and the merge output
-``MergeManifest`` (``aic2026.embedding_merge``). It never runs a model and
-never requires media files or images.
+All three embedding artifact manifest schemas are supported: the per-shard
+``ShardManifest`` (``aic2026.embedding_shard``, written by ``embed_shard.py``),
+the merge output ``MergeManifest`` (``aic2026.embedding_merge``), and the
+runner's ``EmbeddingManifest`` (``aic2026.embedding_artifact``). It never runs
+a model and never requires media files or images.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from aic2026.embedding_artifact import (
     EmbeddingManifest,
 )
 from aic2026.embedding_merge import MergeManifest
+from aic2026.embedding_shard import ShardManifest
 from aic2026.embeddings import EmbeddingSpace
 
 logger = logging.getLogger(__name__)
@@ -143,8 +145,15 @@ def _read_manifest(
 ) -> _ManifestInfo | None:
     """Parse ``manifest.json`` or record the failure.
 
-    Supports both the runner/merge ``EmbeddingManifest`` and the merge-output
-    ``MergeManifest`` schemas.
+    Supports the three embedding artifact manifest schemas produced by the
+    pipeline:
+
+    - ``ShardManifest`` (``aic2026.embedding_shard``): written by
+      ``scripts/embed_shard.py`` for each completed shard;
+    - ``MergeManifest`` (``aic2026.embedding_merge``): written by
+      ``scripts/merge_embedding_shards.py`` for the merged output;
+    - ``EmbeddingManifest`` (``aic2026.embedding_artifact``): written by the
+      runner's ``build_embeddings``.
 
     Returns:
         - Normalized manifest metadata, or ``None`` when the file is
@@ -173,10 +182,12 @@ def _read_manifest(
         )
         return None
 
-    manifest: EmbeddingManifest | MergeManifest
+    manifest: EmbeddingManifest | MergeManifest | ShardManifest
     try:
-        if "total_embeddings" in data and "source_shards" in data:
+        if "source_shards" in data:
             manifest = MergeManifest.from_dict(data)
+        elif "worker_id" in data:
+            manifest = ShardManifest.from_dict(data)
         else:
             manifest = EmbeddingManifest.from_dict(data)
     except (KeyError, TypeError, ValueError) as exc:
@@ -191,8 +202,22 @@ def _read_manifest(
             artifact_id=MODEL_ID_UNKNOWN,
             model_id=manifest.model,
             embedding_dim=manifest.embedding_dim,
-            embedding_dtype=None,
+            embedding_dtype=(
+                manifest.embedding_space.output_dtype
+                if manifest.embedding_space is not None
+                else None
+            ),
             num_rows=manifest.total_embeddings,
+        )
+
+    if isinstance(manifest, ShardManifest):
+        return _ManifestInfo(
+            schema_version=manifest.schema_version,
+            artifact_id=MODEL_ID_UNKNOWN,
+            model_id=manifest.model,
+            embedding_dim=manifest.embedding_dim,
+            embedding_dtype=manifest.dtype,
+            num_rows=manifest.num_embeddings,
         )
 
     return _ManifestInfo(
