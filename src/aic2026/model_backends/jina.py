@@ -356,7 +356,7 @@ class JinaClipEncoder:
         Raises:
             - ValueError: if output shape does not match the input contract.
         """
-        matrix = np.asarray(vectors.detach().cpu().numpy(), dtype=np.float32)
+        matrix = np.asarray(vectors.detach().float().cpu().numpy(), dtype=np.float32)
         expected_shape = (expected_rows, self.embedding_space.embedding_dim)
         if matrix.shape != expected_shape:
             raise ValueError(f"Jina CLIP output shape {matrix.shape} != expected {expected_shape}")

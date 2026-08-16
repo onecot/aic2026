@@ -23,11 +23,19 @@ from aic2026.model_backends.jina import (
 
 
 class _Tensor:
-    """Minimal Torch-tensor stand-in used to test the backend boundary."""
+    """Minimal Torch-tensor stand-in used to test the backend boundary.
 
-    def __init__(self, values: Any) -> None:
+    ``float32`` tensors behave like real Torch CPU tensors. ``bfloat16``
+    tensors simulate Jina CLIP v2 on CUDA: ``numpy()`` without an explicit
+    ``float()`` cast raises exactly like NumPy rejecting the dtype, so the
+    regression tests prove the fix casts before conversion.
+    """
+
+    def __init__(self, values: Any, *, dtype: str = "float32") -> None:
         self.values = np.asarray(values, dtype=np.float32)
+        self.dtype = dtype
         self.device: str | None = None
+        self._cast_to_float: bool = False
 
     def to(self, device: str) -> _Tensor:
         self.device = device
@@ -36,10 +44,16 @@ class _Tensor:
     def detach(self) -> _Tensor:
         return self
 
+    def float(self) -> _Tensor:
+        self._cast_to_float = True
+        return self
+
     def cpu(self) -> _Tensor:
         return self
 
     def numpy(self) -> np.ndarray:
+        if self.dtype == "bfloat16" and not self._cast_to_float:
+            raise TypeError("NumPy does not support the bfloat16 dtype")
         return self.values
 
 
@@ -268,6 +282,71 @@ def test_batched_text_and_image_encoding_preserve_input_order(monkeypatch: pytes
     assert [item.space for item in texts + images] == [encoder.embedding_space] * 4
     assert not np.array_equal(texts[0].vector, texts[1].vector)
     assert not np.array_equal(images[0].vector, images[1].vector)
+
+
+class _Bfloat16Model:
+    """Model stand-in whose outputs mimic Jina CLIP v2 bfloat16 on CUDA."""
+
+    def __init__(self) -> None:
+        self.config = type("Config", (), {"projection_dim": 3})()
+
+    def eval(self) -> None:
+        pass
+
+    def to(self, device: str) -> _Bfloat16Model:
+        return self
+
+    @staticmethod
+    def _out(kwargs: dict[str, object]) -> _Tensor:
+        num_items = int(kwargs["num_items"])  # type: ignore[arg-type]
+        rows = np.array([[float(i), float(i) + 1.0, float(i) + 2.0] for i in range(num_items)])
+        return _Tensor(rows, dtype="bfloat16")
+
+    def get_text_features(self, **kwargs: object) -> _Tensor:
+        return self._out(kwargs)
+
+    def get_image_features(self, **kwargs: object) -> _Tensor:
+        return self._out(kwargs)
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["encode_text", "encode_image", "encode_text_batch", "encode_image_batch"],
+)
+def test_bfloat16_model_output_is_cast_before_numpy_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    """A bfloat16 model output (CUDA) converts cleanly and keeps the contract.
+
+    ``torch.Tensor.numpy()`` rejects bfloat16, so the backend must cast to
+    float32 first. The emitted embeddings remain float32 with the declared
+    L2 normalization regardless of the model's internal dtype.
+    """
+    fake_transformers = _FakeTransformers()
+    fake_transformers.model = _Bfloat16Model()
+    monkeypatch.setattr(
+        jina,
+        "_load_dependencies",
+        lambda: (_FakeTorch(), fake_transformers),
+    )
+    encoder = JinaClipEncoder(_config())
+
+    if method == "encode_text":
+        embeddings = [encoder.encode_text("a query")]
+    elif method == "encode_image":
+        embeddings = [encoder.encode_image("an image")]
+    elif method == "encode_text_batch":
+        embeddings = encoder.encode_text_batch(["a query", "another query"])
+    else:
+        embeddings = encoder.encode_image_batch(["an image", "another image"])
+
+    assert len(embeddings) == 2 if "batch" in method else len(embeddings) == 1
+    for embedding in embeddings:
+        assert embedding.vector.dtype == np.float32
+        assert embedding.space == encoder.embedding_space
+        assert np.linalg.norm(embedding.vector) == pytest.approx(1.0, rel=1e-6)
+        assert embedding.vector.shape == (3,)
 
 
 def test_precision_controls_output_dtype(monkeypatch: pytest.MonkeyPatch) -> None:
