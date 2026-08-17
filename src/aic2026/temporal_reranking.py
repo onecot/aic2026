@@ -16,7 +16,8 @@ ready for :func:`aic2026.kis_scoring.evaluate_kis`.
 
 Only the temporal bonus method is implemented here; it does not modify the
 embedding pipeline, index builder, scorer, evaluation code, or the existing
-temporal mean aggregation module.
+temporal mean aggregation module. It reuses the shared retrieval foundation
+(:mod:`aic2026.retrieval_candidates`) for video grouping.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from aic2026.kis_prediction_runner import (
     read_kis_prediction_artifact,
 )
 from aic2026.kis_scoring import KisPrediction
+from aic2026.retrieval_candidates import group_candidates_by_video
 
 
 @dataclass(frozen=True)
@@ -88,9 +90,7 @@ def rerank_query_predictions(
     """
     _require_ranked_predictions(predictions)
 
-    by_video: dict[str, list[RankedKisPrediction]] = {}
-    for prediction in predictions:
-        by_video.setdefault(prediction.video_id, []).append(prediction)
+    by_video = group_candidates_by_video(predictions)
 
     boosted: list[tuple[float, RankedKisPrediction]] = []
     for video_id, group in by_video.items():

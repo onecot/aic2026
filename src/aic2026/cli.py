@@ -10,6 +10,8 @@ Commands:
     media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
     objects-analyze - analyze BTC object detections for KIS retrieval usefulness.
     object-rerank-kis - rerank a KIS prediction artifact with object detections.
+    predict-qa      - generate QA retrieval evidence from an index artifact.
+    export-qa-submission - export a QA artifact to the provisional BTC CSV.
 
 CLI logic stays thin; the real work lives in reusable modules
 (``aic2026.inspection``, ``aic2026.config``, ``aic2026.kis_prediction_runner``,
@@ -45,6 +47,8 @@ from aic2026.media_info_retrieval import (
 from aic2026.model_backends.openclip import OpenClipEncoder
 from aic2026.object_analysis import format_report as format_object_report
 from aic2026.object_analysis import run_object_analysis
+from aic2026.qa.qa_prediction_runner import QaPredictionRunnerConfig, read_qa_artifact, run_qa_prediction
+from aic2026.qa.qa_submission import write_qa_submission_csv
 from aic2026.object_reranking import (
     FrameObjectSource,
     ObjectRerankingConfig,
@@ -166,6 +170,114 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     predict_kis_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    predict_qa_parser = subparsers.add_parser(
+        "predict-qa",
+        help="Run QA retrieval evidence generation and write a QA artifact directory.",
+    )
+    predict_qa_parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a YAML config file (defaults to configs/default.yaml).",
+    )
+    predict_qa_parser.add_argument(
+        "--evaluation-set",
+        type=Path,
+        default=Path("data/eval/eval_set.csv"),
+        help="Path to evaluation CSV (default: data/eval/eval_set.csv).",
+    )
+    predict_qa_parser.add_argument(
+        "--index-artifact",
+        type=Path,
+        required=True,
+        help="Path to the index artifact directory.",
+    )
+    predict_qa_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path for the output QA artifact directory (manifest.json + predictions.jsonl).",
+    )
+    predict_qa_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=100,
+        help="Number of ranked frame retrieval candidates per query.",
+    )
+    predict_qa_parser.add_argument(
+        "--query-text-field",
+        choices=("query_text_vi", "query_text_en"),
+        default="query_text_vi",
+        help="Query text field to encode.",
+    )
+    predict_qa_parser.add_argument(
+        "--video-aggregation",
+        choices=("none", "max", "mean", "mean_top_n"),
+        default="none",
+        help="Video-level ranking strategy (none = frame-level ranking).",
+    )
+    predict_qa_parser.add_argument(
+        "--video-aggregation-top-n",
+        type=int,
+        default=None,
+        help="top_n parameter for mean_top_n video aggregation.",
+    )
+    predict_qa_parser.add_argument(
+        "--window-max-gap",
+        type=int,
+        default=None,
+        help="Optional temporal window grouping gap (positive integer).",
+    )
+    predict_qa_parser.add_argument(
+        "--query-id",
+        dest="query_ids",
+        action="append",
+        default=None,
+        help="Optional query id filter; repeat to select an explicit subset.",
+    )
+    predict_qa_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional stable run id recorded in the output artifact.",
+    )
+    predict_qa_parser.add_argument(
+        "--allow-embedding-space-mismatch",
+        action="store_true",
+        help=(
+            "Explicitly allow query/index embedding-space mismatch for diagnostic experiments. "
+            "Disabled by default."
+        ),
+    )
+    predict_qa_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    export_qa_parser = subparsers.add_parser(
+        "export-qa-submission",
+        help="Export a QA artifact directory to the provisional BTC submission CSV.",
+    )
+    export_qa_parser.add_argument(
+        "--artifact",
+        type=Path,
+        required=True,
+        help="Path to a QA artifact directory (manifest.json + predictions.jsonl).",
+    )
+    export_qa_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path for the output submission CSV.",
+    )
+    export_qa_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -850,6 +962,54 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Prediction artifact: {args.output}")
         print(f"Processed queries: {artifact.processed_query_count}/{artifact.evaluation_set_query_count}")
         print(f"Index artifact id: {artifact.index_manifest['artifact_id']}")
+        return 0
+
+    if args.command == "predict-qa":
+        config = load_config(args.config)
+        try:
+            encoder = OpenClipEncoder(config.openclip)
+            artifact = run_qa_prediction(
+                QaPredictionRunnerConfig(
+                    evaluation_set_path=args.evaluation_set,
+                    index_artifact_dir=args.index_artifact,
+                    prediction_output_dir=args.output,
+                    model_config={
+                        "backend": config.openclip.backend,
+                        "model_name": config.openclip.model_name,
+                        "pretrained": config.openclip.pretrained,
+                        "device": config.openclip.device,
+                        "precision": config.openclip.precision,
+                        "normalization": config.openclip.normalization,
+                        "preprocessing_id": config.openclip.preprocessing_id,
+                        "tokenizer_id": config.openclip.tokenizer_id,
+                    },
+                    top_k=args.top_k,
+                    query_text_field=args.query_text_field,
+                    video_aggregation=None if args.video_aggregation == "none" else args.video_aggregation,
+                    video_aggregation_top_n=args.video_aggregation_top_n,
+                    window_max_gap=args.window_max_gap,
+                    query_subset_ids=tuple(args.query_ids) if args.query_ids else None,
+                    allow_embedding_space_mismatch=args.allow_embedding_space_mismatch,
+                    run_id=args.run_id,
+                ),
+                encoder,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"QA artifact: {args.output}")
+        print(f"Processed queries: {artifact.manifest.processed_query_count}/{artifact.manifest.evaluation_set_query_count}")
+        print(f"Index artifact id: {artifact.manifest.index_manifest['artifact_id']}")
+        return 0
+
+    if args.command == "export-qa-submission":
+        try:
+            artifact = read_qa_artifact(args.artifact)
+            write_qa_submission_csv(artifact, args.output)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"QA submission CSV: {args.output}")
         return 0
 
     if args.command == "temporal-expand-kis":

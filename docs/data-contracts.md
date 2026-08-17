@@ -537,3 +537,97 @@ print(result.score_at(1), result.final_score)
 so an incomplete experiment cannot silently produce a partial benchmark.
 `KisEvaluationResult` retains per-query scores, aggregate `TopKScore` values,
 and `final_score`. QA and TRAKE scoring are intentionally not implemented.
+
+## QA prediction artifact contract (`aic2026.qa`)
+
+The QA task foundation (`src/aic2026/qa/`) produces ranked retrieval evidence
+for `task == qa` evaluation rows. It reuses the shared retriever and the
+task-independent candidates from `aic2026.retrieval_candidates`
+(`VideoCandidate`, `WindowCandidate`) and defines its own typed records in
+`aic2026.qa.qa_types`.
+
+### Purpose and flow
+
+```text
+data/eval/eval_set.csv (qa rows)
+        |
+        v
+EvaluationQuery (task=qa, answer required)
+        |
+        v
+run_qa_prediction  ->  index retriever (frame candidates)
+        |              group / aggregate / rank (retrieval_candidates)
+        v
+QA artifact directory: manifest.json + predictions.jsonl
+        |
+        v
+qa_submission  ->  provisional BTC submission CSV (isolated)
+```
+
+### Artifact layout
+
+One directory produced by `run_qa_prediction`:
+
+- `manifest.json`: one JSON object with the run/experiment metadata below.
+- `predictions.jsonl`: one JSON object per processed query, in query order.
+
+Both files are written atomically (temp file then rename); an interrupted run
+never exposes a partially written artifact.
+
+### `manifest.json` fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | string | must equal `QA_PREDICTION_SCHEMA_VERSION = "1.0"` |
+| `run_id` / `created_at` | string | run provenance (ISO-8601 UTC with `Z` suffix) |
+| `evaluation_set_path` | string | resolved evaluation CSV path |
+| `evaluation_set_query_count` | int | number of QA rows in the set (`>= 1`) |
+| `processed_query_count` | int | number of query results (`== len(query_results)`) |
+| `query_text_field` | string | `query_text_vi` or `query_text_en` |
+| `top_k` | int | frame retrieval cutoff per query (`>= 1`) |
+| `video_aggregation` | string \| null | `max` / `mean` / `mean_top_n`, or `null` for frame-level ranking |
+| `video_aggregation_top_n` | int \| null | `mean_top_n` parameter; only valid for that method |
+| `window_max_gap` | int \| null | positive temporal-window grouping gap, or `null` |
+| `embedding_space_compatible` | bool | whether encoder/index spaces matched |
+| `embedding_space_override_used` | bool | override used (implies `embedding_space_compatible == false`) |
+| `index_artifact_path` | string | resolved index artifact directory |
+| `index_manifest` | object | the referenced index artifact's manifest |
+| `model_embedding_space` | object | encoder embedding space |
+| `model_config` | object \| null | JSON-serializable model configuration (provenance) |
+| `selected_query_ids` | array \| null | explicit processed subset, or `null` |
+
+### `predictions.jsonl` per-line schema
+
+Each line is one `QaQueryResult`:
+
+- `query_id`: canonical query identifier.
+- `query_text`: the resolved query text that was encoded.
+- `answer`: per-query textual answer. The retrieval foundation writes `""`;
+  a future answer-generation stage fills it before submission.
+- `predictions`: ranked frame evidence, each `{rank, video_id, frame_index,
+  score}` (1-based strictly increasing ranks; empty when retrieval returned
+  nothing).
+- `video_candidates`: video-level aggregates, each `{video_id, score, rank,
+  frame_count, top_frame_index}`.
+- `window_candidates`: optional temporal windows, each `{video_id,
+  frame_start, frame_end, score, rank}`; empty when no window grouping was
+  configured.
+
+Ranks within each list are strictly increasing. The artifact loader
+(`read_qa_artifact`) re-validates the whole artifact on load.
+
+### Provisional BTC submission format
+
+The AIC 2026 BTC QA submission format is not yet confirmed, so the *only*
+module that knows the on-disk submission layout is `aic2026.qa.qa_submission`
+(provisional `provisional-v1`):
+
+```text
+query_id,rank,video_id,frame_index,answer
+```
+
+One CSV row per ranked candidate; the per-query answer is repeated on every
+row. The formatter raises `ValueError` when any processed query has an empty
+answer or no evidence. When the official format is published, only
+`qa_submission.py` and its tests change; the artifact contract above is
+independent of the submission layout.

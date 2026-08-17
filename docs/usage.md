@@ -23,10 +23,20 @@ Index          aic2026.index_builder.build_index
    |            dataset embeddings -> (index artifact) embeddings + norms + frames
    v
 Retrieval      aic2026.retrieval.IndexRetriever     exact cosine search
+   |            frame candidates (RetrievalCandidate)
+   v
+Candidates     aic2026.retrieval_candidates         grouping / aggregation /
+   |            frame / video / window candidates   ranking (task-independent)
    v
 KIS Prediction aic2026.kis_prediction_runner.run_kis_prediction  (CLI: aic2026 predict-kis)
    v
 Evaluation     aic2026.kis_scoring.evaluate_kis     R@1..R@100 + Final Score
+   v
+QA Prediction  aic2026.qa.qa_prediction_runner.run_qa_prediction  (CLI: aic2026 predict-qa)
+   |            reuses Candidates foundation (frame / video / window evidence)
+   v
+QA Submission  aic2026.qa.qa_submission.write_qa_submission_csv   (CLI: aic2026 export-qa-submission)
+                provisional BTC CSV format; QA scoring not implemented
 ```
 
 Artifact purposes:
@@ -43,7 +53,8 @@ Artifact purposes:
 CLI commands exist (`aic2026 inspect`, `aic2026 predict-kis`,
 `aic2026 temporal-expand-kis`, `aic2026 media-info-search`,
 `aic2026 media-info-evaluate`, `aic2026 media-info-report`,
-`aic2026 objects-analyze`, `aic2026 object-rerank-kis`). The embedding and
+`aic2026 objects-analyze`, `aic2026 object-rerank-kis`,
+`aic2026 predict-qa`, `aic2026 export-qa-submission`). The embedding and
 index stages are Python-API only and are composed in scripts. Analysis-only
 CLIs live under `scripts/` (e.g. `scripts/analyze_kis_errors.py`,
 `scripts/analyze_keyframes.py`, `scripts/embed_shard.py`,
@@ -397,6 +408,36 @@ for candidate in results:
 `frame_index`, `pts_time`, `score`. Rank is 1-based; `score` is cosine
 similarity computed from stored norms. Mismatched embedding spaces, wrong
 dimensions, zero-norm queries, or a non-positive `top_k` raise `ValueError`.
+
+### Retrieval candidate foundation (frame / video / window)
+
+The retrieval core returns *frame-level* candidates (`RetrievalCandidate`).
+For video-level or window-level retrieval (future QA and TRAKE tasks), the
+task-independent foundation in `aic2026.retrieval_candidates` provides pure
+primitives that consume those candidates:
+
+- `group_candidates_by_video(candidates)` — grouping by `video_id`,
+  preserving first-appearance video order and per-video input order.
+- `aggregate_video_score(frame_scores, method="max", top_n=None)` — video
+  aggregation strategies: `"max"`, `"mean"`, and `"mean_top_n"`.
+- `build_video_candidates(frame_candidates, method="max", top_n=None)` —
+  grouped + aggregated + ranked `VideoCandidate` values.
+- `sort_by_score(candidates)` — stable (deterministic) score ranking.
+- `group_windows(frame_indices, max_gap)` — temporal window grouping for
+  future window-level candidates (`WindowCandidate`).
+
+```python
+from aic2026.retrieval_candidates import build_video_candidates, group_candidates_by_video
+
+results = retriever.search(query_embedding, top_k=100)   # frame candidates
+groups = group_candidates_by_video(results)              # by video
+videos = build_video_candidates(results, method="max")   # VideoCandidate list
+```
+
+The foundation never runs retrieval, encodes queries, or applies
+task-specific scoring; QA/TRAKE layers compose these primitives. It is also
+reused by the existing post-processing stages (`video_reranking`,
+`temporal_aggregation`, `temporal_reranking`).
 
 ## 7. KIS evaluation stage
 
@@ -2601,3 +2642,257 @@ Verify by listing the directory and comparing with the manifest's recorded
 - [ ] keyframe artifact generated (`frames.ndjson`, `manifest.json`)
 - [ ] embedding artifact generated (`embeddings.npy`, `manifest.json`)
 - [ ] manifests included in the folder you send back
+
+## 23. QA task foundation
+
+The QA task foundation (`aic2026.qa`) produces ranked retrieval evidence for
+QA queries using the same index retriever and candidate foundation as KIS. It
+implements retrieval infrastructure only: no reranking, no LLM/VLM answer
+generation, and no QA scoring. It reuses `IndexRetriever`/`RetrievalCandidate`
+(`aic2026.retrieval`) and the frame/video/window candidate primitives
+(`aic2026.retrieval_candidates`) rather than re-implementing grouping,
+aggregation, or ranking.
+
+Module layout (`src/aic2026/qa/`):
+
+- `qa_types.py` — typed records and the artifact contract.
+- `qa_dataset.py` — QA query selection and query-text resolution.
+- `qa_prediction_runner.py` — wires `EvaluationSet -> encoder ->
+  IndexRetriever -> candidates -> artifact`.
+- `qa_submission.py` — isolated BTC submission export.
+- `qa_scoring.py` — placeholder for the future QA scorer.
+
+### Python API
+
+```python
+from pathlib import Path
+from aic2026.config import load_config
+from aic2026.model_backends.openclip import OpenClipEncoder
+from aic2026.qa import QaPredictionRunnerConfig, run_qa_prediction
+
+config = load_config()
+artifact = run_qa_prediction(
+    QaPredictionRunnerConfig(
+        evaluation_set_path=Path("data/eval/eval_set.csv"),
+        index_artifact_dir=Path("data/interim/indexes/btc-batch1-full"),
+        prediction_output_dir=Path("data/interim/predictions/qa"),
+        model_config=config.openclip.__dict__,   # provenance only
+        top_k=100,
+        query_text_field="query_text_vi",
+        video_aggregation=None,      # None = frame-level ranking
+        window_max_gap=None,         # optional temporal windows
+        allow_embedding_space_mismatch=False,
+        run_id="my-qa-run",
+    ),
+    OpenClipEncoder(config.openclip),
+)
+print(artifact.manifest.processed_query_count)
+```
+
+The runner operates only on `task == qa` rows of the evaluation CSV. It fails
+fast (`ValueError`) when the evaluation set has no QA queries. Query text
+selection and embedding-space mismatch behavior match the KIS runner
+(Section 7).
+
+### Artifact layout
+
+The output is a directory:
+
+- `manifest.json` — run/experiment metadata: `schema_version`, `run_id`,
+  `created_at`, `evaluation_set_path`, `evaluation_set_query_count`,
+  `processed_query_count`, `query_text_field`, `top_k`, `video_aggregation`,
+  `video_aggregation_top_n`, `window_max_gap`, embedding-space diagnostics,
+  and index/model provenance.
+- `predictions.jsonl` — one `QaQueryResult` per line with `query_id`,
+  `query_text`, `answer`, ranked `predictions` (frame evidence), ranked
+  `video_candidates` (video-level aggregates), and optional ranked
+  `window_candidates`.
+
+The `answer` field is left empty by the retrieval foundation; a future
+answer-generation stage fills it before submission. See
+`docs/data-contracts.md` for the full schema.
+
+### Experiment controls
+
+- `top_k` — frame retrieval cutoff per query.
+- `query_text_field` — `query_text_vi` (default) or `query_text_en`.
+- `video_aggregation` — `None` (frame-level ranking) or one of `max`,
+  `mean`, `mean_top_n` (rank evidence at video level). `mean_top_n` requires
+  `video_aggregation_top_n`.
+- `window_max_gap` — positive integer to group each video's frames into
+  temporal windows (`WindowCandidate`); `None` disables windows.
+- `query_subset_ids` / CLI `--query-id` — restrict to explicit query ids.
+
+### CLI
+
+```bash
+aic2026 predict-qa \
+  --config configs/experiments/vit-b-32-openai.yaml \
+  --evaluation-set data/eval/eval_set.csv \
+  --index-artifact data/interim/indexes/btc-batch1-full \
+  --output data/interim/predictions/qa \
+  --top-k 100 \
+  --video-aggregation max \
+  --window-max-gap 5 \
+  --run-id my-qa-run
+```
+
+### Submission export (provisional)
+
+```bash
+aic2026 export-qa-submission \
+  --artifact data/interim/predictions/qa \
+  --output data/interim/predictions/qa_submission.csv
+```
+
+The AIC 2026 BTC submission format is not yet confirmed for QA, so the
+formatter in `qa_submission.py` owns the entire provisional format
+(`provisional-v1`: `query_id,rank,video_id,frame_index,answer`, one row per
+ranked candidate). When the official format is published, only
+`qa_submission.py` and its tests need to change. The formatter refuses to
+export when a query has no answer (answers come from a later stage) or no
+evidence.
+
+### QA scoring
+
+Not implemented. `aic2026.qa.qa_scoring` documents the intended contract and
+always raises `NotImplementedError`; see `docs/data-contracts.md`.
+
+## 24. QA smoke test (synthetic, end-to-end)
+
+A reproducible end-to-end QA pipeline smoke test on a synthetic QA query set.
+It validates the whole chain — synthetic input → QA dataset loader →
+retrieval → QA prediction artifact → submission export → artifact
+verification — without any VQA model. It is a testing/demo layer only; it
+does not modify the retrieval core or KIS behavior.
+
+### How to run
+
+```bash
+source .venv/bin/activate
+python scripts/qa_smoke.py --work-dir data/interim/qa-smoke
+```
+
+Optional flags: `--evaluation-set` (default
+`data/eval/qa_smoke_eval.csv`), `--top-k` (default 50), `--seed` (default
+42), `--report-json <path>` to also write the outcome as JSON.
+
+The synthetic dataset `data/eval/qa_smoke_eval.csv` contains 15 BTC-style QA
+queries (events/actions, objects/persons, scenes) with Vietnamese and English
+questions, expected-answer placeholders, and GT video/frame metadata.
+
+### Expected output
+
+Running the script prints a report and writes demo artifacts under
+`--work-dir`:
+
+- `index/` — a small deterministic synthetic index (6 videos × 10 frames).
+- `qa_predictions/` — the QA prediction artifact (`manifest.json` +
+  `predictions.jsonl`).
+- `qa_predictions_determinism/` — a second identical run used for the
+  determinism check.
+- `qa_submission.csv` — the provisional BTC submission CSV
+  (`query_id,rank,video_id,frame_index,answer`).
+
+Example report:
+
+```text
+QA smoke run complete
+- evaluation set: .../data/eval/qa_smoke_eval.csv (15 QA queries)
+- index artifact: .../index
+- prediction artifact: .../qa_predictions
+- determinism artifact: .../qa_predictions_determinism
+- predictions: 750 across 15 queries
+- determinism verified: True
+- placeholder answers filled: 15
+- submission CSV: .../qa_submission.csv
+```
+
+### What is tested
+
+- Synthetic QA dataset loading (15 QA queries, GT video/frame/answer
+  present, video ids match the synthetic index).
+- QA runner execution on the small index: every query produces `top_k`
+  predictions, ranks are `1..top_k`.
+- Prediction artifact validation: `video_id` exists, `frame_index` is valid
+  for that video, scores are finite, ranks strictly increase, every query has
+  predictions.
+- Determinism: two runs produce identical query results.
+- Artifact serialization round-trip (`read_qa_artifact`).
+- Submission export: CSV columns, row count, non-empty answers, and
+  rejection of queries without evidence.
+
+The logic lives in `aic2026.qa.qa_smoke` (reusable, tested in
+`tests/test_qa_smoke.py`); `scripts/qa_smoke.py` is a thin CLI.
+
+### What is intentionally not tested
+
+- VQA / answer generation: the smoke pipeline fills each submission answer
+  with the query's expected answer as a placeholder (`qa_submission` refuses
+  to export empty answers, by design). Real answering is a future model stage.
+- Retrieval quality (no GT-retrieval assertions — the goal is pipeline
+  mechanics, not ranking accuracy).
+- The final BTC submission format, which is not yet confirmed (see the
+  provisional `provisional-v1` note in `docs/data-contracts.md`).
+
+## 25. Frame lookup (annotation utility)
+
+A general-purpose frame lookup tool that resolves a keyframe reference
+(`L25_V085/000123.jpg` or `L25_V085 123`) against any canonical keyframe
+artifact directory and optionally derives an annotation GT frame range.
+
+### Purpose
+
+The tool exists for annotation workflows that need stable frame identities
+and derived GT ranges, without depending on which extractor or artifact
+produced the keyframes:
+
+- **KIS**: derive `gt_frame_start` / `gt_frame_end` columns for the
+  evaluation CSV by centering a `--window-sec` window on a chosen keyframe.
+- **QA**: select evidence frames for QA queries and for QA evaluation.
+- **TRAKE**: annotate event time ranges as `(gt_frame_start, gt_frame_end)`.
+
+### Contract it relies on
+
+The tool depends only on the canonical keyframe artifact schema:
+
+- `frames.ndjson` — one canonical keyframe record per line (identity fields
+  `keyframe.video_id`, `keyframe.keyframe_ordinal`, `frame_index` are
+  required; `pts_time` / `fps` are preserved when present and tolerated when
+  absent);
+- an optional `manifest.json` (presence/absence is tolerated; only
+  `schema_version` is reported, no artifact id or extractor name is required);
+- an optional canonical `images/<video_id>/<ordinal:06d>.jpg` collection.
+
+It deliberately does **not** read or require legacy maps, BTC keyframe
+folders, or any extractor-specific layout such as `adaptive_sbd_v1`. Future
+artifacts work unchanged as long as `frames.ndjson` follows the canonical
+schema. Stored metadata is never modified: the `--window-sec` GT range is
+derived and clamped (start never below frame 0), not written back.
+
+### How to run
+
+```bash
+source .venv/bin/activate
+python scripts/frame_lookup.py \
+    --artifact-dir data/keyframes/adaptive_sbd_v1 "L25_V085/000123.jpg"
+
+python scripts/frame_lookup.py \
+    --artifact-dir another/keyframe_artifact --window-sec 2.0 "L25_V085 123"
+```
+
+Options:
+
+- `--artifact-dir <dir>` (required): directory containing `frames.ndjson`.
+- `--window-sec <float>`: total GT window duration in seconds; derives
+  `gt_frame_start` / `gt_frame_end` from the record's `fps` (fails if the
+  record stores no `fps`).
+- `--config <yaml>`: optional YAML config; its `frame_lookup.window_sec` is
+  used as the default when `--window-sec` is absent (explicit CLI flags
+  override the config).
+
+Output is a deterministic, column-aligned text record. On lookup or input
+errors the script prints `error: ...` to stderr and exits non-zero.
+
+The logic lives in `aic2026.frame_lookup` (reusable, tested in
+`tests/test_frame_lookup.py`); `scripts/frame_lookup.py` is a thin CLI.

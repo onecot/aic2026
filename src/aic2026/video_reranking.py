@@ -10,16 +10,17 @@ score, with each video's frames ordered by their original CLIP score.
 The output is a scorer-compatible ``{query_id: [KisPrediction, ...]}`` mapping
 ready for :func:`aic2026.kis_scoring.evaluate_kis`.
 
-This module does not modify the embedding pipeline, index builder, scorer, or
-evaluation code; it consumes an existing prediction artifact and produces
-scoring input.
+This module reuses the shared retrieval foundation
+(:mod:`aic2026.retrieval_candidates`) for video grouping, video-score
+aggregation, and stable ranking; it does not modify the embedding pipeline,
+index builder, scorer, or evaluation code; it consumes an existing prediction
+artifact and produces scoring input.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import fsum
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +30,11 @@ from aic2026.kis_prediction_runner import (
     read_kis_prediction_artifact,
 )
 from aic2026.kis_scoring import KisPrediction
+from aic2026.retrieval_candidates import (
+    aggregate_video_score,
+    group_candidates_by_video,
+    sort_by_score,
+)
 
 #: Video-level aggregation methods implemented by this module.
 _IMPLEMENTED_AGGREGATIONS: frozenset[str] = frozenset({"max", "mean_top_n"})
@@ -90,9 +96,7 @@ def rerank_query_predictions(
     """
     _require_ranked_predictions(predictions)
 
-    by_video: dict[str, list[RankedKisPrediction]] = {}
-    for prediction in predictions:
-        by_video.setdefault(prediction.video_id, []).append(prediction)
+    by_video = group_candidates_by_video(predictions)
 
     video_order: list[tuple[str, float]] = [
         (video_id, _video_score([float(item.score) for item in group], config))
@@ -102,8 +106,7 @@ def rerank_query_predictions(
 
     ranked_frames: list[RankedKisPrediction] = []
     for video_id, _score in video_order:
-        ordered = sorted(by_video[video_id], key=lambda item: item.score, reverse=True)
-        ranked_frames.extend(ordered)
+        ranked_frames.extend(sort_by_score(by_video[video_id]))
 
     return [
         KisPrediction(rank=rank, video_id=item.video_id, frame_index=item.frame_index)
@@ -172,15 +175,14 @@ def _video_score(
           ``top_n`` candidates).
 
     Raises:
-        - ValueError: if ``frame_scores`` is empty.
+        - ValueError: if ``frame_scores`` is empty or the aggregation
+          parameters are invalid.
     """
-    if not frame_scores:
-        raise ValueError("video score requires at least one frame score")
-    if config.aggregation == "max":
-        return max(frame_scores)
-    ordered = sorted(frame_scores, reverse=True)
-    count = min(config.top_n, len(ordered))
-    return fsum(ordered[:count]) / count
+    return aggregate_video_score(
+        frame_scores,
+        method=config.aggregation,
+        top_n=config.top_n,
+    )
 
 
 def _require_ranked_predictions(predictions: Sequence[RankedKisPrediction]) -> None:

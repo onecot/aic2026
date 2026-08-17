@@ -14,8 +14,10 @@ Only the ``"mean"`` aggregation method is implemented. The window size and the
 aggregation method are configurable through
 :class:`TemporalAggregationConfig`.
 
-This module does not modify embedding, index, retrieval, or scoring code; it
-consumes an existing prediction artifact and produces scoring input.
+This module reuses the shared retrieval foundation
+(:mod:`aic2026.retrieval_candidates`) for video grouping; it does not modify
+embedding, index, retrieval, or scoring code; it consumes an existing
+prediction artifact and produces scoring input.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from aic2026.kis_prediction_runner import (
     read_kis_prediction_artifact,
 )
 from aic2026.kis_scoring import KisPrediction
+from aic2026.retrieval_candidates import group_candidates_by_video
 
 #: Aggregation methods currently implemented by this module.
 _IMPLEMENTED_METHODS: frozenset[str] = frozenset({"mean"})
@@ -90,9 +93,7 @@ def aggregate_query_predictions(
     """
     _require_ranked_predictions(predictions)
 
-    by_video: dict[str, list[RankedKisPrediction]] = {}
-    for prediction in predictions:
-        by_video.setdefault(prediction.video_id, []).append(prediction)
+    by_video = group_candidates_by_video(predictions)
 
     aggregated: list[tuple[str, int, float]] = []
     for video_id, group in by_video.items():

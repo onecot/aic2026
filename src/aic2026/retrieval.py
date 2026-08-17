@@ -2,6 +2,11 @@
 
 This module is intentionally independent of raw dataset layout and
 implements exact cosine retrieval over the artifact contract.
+
+The frame-level :class:`RetrievalCandidate` values returned here are the
+candidate-generation output consumed by the task-independent foundation
+(:mod:`aic2026.retrieval_candidates`) for video and window-level grouping,
+aggregation, and ranking in future QA/TRAKE layers.
 """
 
 from __future__ import annotations
