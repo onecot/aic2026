@@ -364,6 +364,37 @@ embedding and index artifacts share the same row-order/identity contract, so
 an embedding artifact is index-ready; the current builder reads the dataset
 directly.
 
+### CLI: `aic2026 build-index`
+
+Indexing a stored embedding artifact is done through the main CLI:
+
+```bash
+source .venv/bin/activate
+aic2026 build-index \
+  --source outputs/embeddings_jina_v2 \
+  --output data/interim/indexes/jina-v2-full \
+  --artifact-id jina-v2-full \
+  --verify
+```
+
+Options:
+
+- `--source <dir>` (required): a verified embedding artifact directory. Any of
+  the three embedding manifest schemas is accepted — the runner's canonical
+  `EmbeddingManifest`, a per-worker `ShardManifest` (e.g. a single Jina worker
+  output), or a merged `MergeManifest` (`scripts/merge_embedding_shards.py`).
+- `--output <dir>` (required): index artifact directory (created if absent).
+- `--artifact-id <id>` (required): unique run identity recorded in the index
+  manifest.
+- `--batch-flush <n>`: rows between memmap flush and checkpoint write
+  (default 1000).
+- `--verify`: run `validate_index_files` on the completed artifact and fail
+  (exit 1) if it is inconsistent.
+
+The command wraps `EmbeddingArtifactDataset` -> `build_index` and records the
+source artifact's `embedding_space` in the index manifest, so a Jina/OpenCLIP
+index stays space-identified for downstream `predict-kis` / `predict-qa`.
+
 ### Output artifact
 
 ```text
@@ -1590,6 +1621,19 @@ Because every worker shard recorded the same `embedding_space`, the merged
 matrix and its `embedding_space` identity are directly consumable by the
 existing embedding/index pipeline.
 
+```bash
+aic2026 build-index \
+  --source data/interim/embeddings/merged \
+  --output data/interim/indexes/openclip-l14-full \
+  --artifact-id openclip-l14-full \
+  --verify
+```
+
+`--source` accepts any of the three embedding manifest schemas — a merged
+`MergeManifest`, a single completed worker `ShardManifest`, or the runner's
+canonical `EmbeddingManifest` — so a single Jina/OpenCLIP worker shard can be
+indexed directly (Section 5).
+
 ### Exact smoke-test (small subset, no full run)
 
 ```bash
@@ -1925,8 +1969,7 @@ same command against a complete, matching output is a no-op. `--overwrite`
 rebuilds from scratch.
 
 Verify the delivered artifact before using it as the embedding image source
-(independent of materialization internals; checks the manifest, the canonical
-frame records, and image coverage):
+(checks the manifest, canonical frame records, and image coverage):
 
 ```bash
 python scripts/verify_keyframe_materialization.py \
@@ -2737,6 +2780,30 @@ aic2026 predict-qa \
   --run-id my-qa-run
 ```
 
+The query encoder is selected from the active model section of `--config`:
+an optional `models.jina` section selects the Jina CLIP backend; otherwise
+the OpenCLIP section is used. For Jina CLIP v2 against the `jina-v2-full`
+index built from `outputs/embeddings_jina_v2`:
+
+```bash
+aic2026 predict-qa \
+  --config configs/experiments/jina-clip-v2.yaml \
+  --evaluation-set data/eval/eval_set-qa_trake.csv \
+  --index-artifact data/interim/indexes/jina-v2-full \
+  --output data/interim/qa/qa-jina-real-test \
+  --top-k 100 \
+  --query-text-field query_text_en \
+  --run-id qa-jina-real-test
+```
+
+The Jina config must fix `pretrained: jinaai/jina-clip-v2`, `precision: fp32`,
+`normalization: l2`, and the `jina-clip-v2-preprocess-v1` /
+`jina-clip-v2-tokenizer-v1` revision labels so the encoder reports the exact
+`jina-clip:jina-clip-v2:jinaai/jina-clip-v2:fp32:l2:...` space recorded in the
+index. Note that compatibility ignores the build-environment `model_version`
+(installed Transformers/OpenCLIP patch revision); the space identity is the
+model/checkpoint/preprocessing convention, not the runtime patch.
+
 ### Submission export (provisional)
 
 ```bash
@@ -2896,3 +2963,258 @@ errors the script prints `error: ...` to stderr and exits non-zero.
 
 The logic lives in `aic2026.frame_lookup` (reusable, tested in
 `tests/test_frame_lookup.py`); `scripts/frame_lookup.py` is a thin CLI.
+
+## 26. Caption generation
+
+The caption stage augments canonical keyframes with model-generated textual
+captions, producing a resumable caption artifact under
+`data/interim/captions/<artifact_id>/`. It reads the canonical keyframe
+artifact (`frames.ndjson` + `images/`) and never modifies it.
+
+Two caption backends are available (selected with `--backend`):
+
+| Backend | Runtime | Hardware | Default model |
+| --- | --- | --- | --- |
+| `qwen2.5-vl` | Transformers + Torch | CUDA / MPS / CPU | `Qwen2.5-VL-3B-Instruct` |
+| `jina-vlm-mlx` | MLX (`mlx-vlm`) | Apple Silicon (MPS) | `jinaai/jina-vlm-mlx` |
+
+`qwen2.5-vl` is the default backend and keeps existing behavior unchanged.
+
+### Prerequisites
+
+Backend runtimes are optional; install only what you use:
+
+```bash
+source .venv/bin/activate
+pip install -e '.[caption]'        # qwen2.5-vl: torch, transformers>=4.49, Pillow
+pip install -e '.[caption-mlx]'    # jina-vlm-mlx: mlx, mlx-vlm (main), transformers>=4.49, Pillow
+```
+
+- Qwen2.5-VL requires `transformers >= 4.49`.
+- Jina VLM MLX is a native MLX port (4-bit, ~2 GB weights) built for Apple
+  Silicon (macOS arm64) only; on other platforms it fails with a clear error
+  and you should use `qwen2.5-vl`. Because jina-vlm support is merged into
+  `mlx-vlm` main but not yet released, the `caption-mlx` group installs
+  `mlx-vlm` from the `main` branch.
+- Captioner runtimes are loaded lazily only when the CLI runs; the core
+  package and its unit tests do not require any backend runtime.
+
+### How to run (full keyframe set, Qwen2.5-VL)
+
+```bash
+source .venv/bin/activate
+python scripts/generate_captions.py \
+    --backend qwen2.5-vl \
+    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
+    --output-dir data/interim/captions/qwen2.5-vl-3b \
+    --model Qwen2.5-VL-3B-Instruct \
+    --batch-size 4 \
+    --device auto \
+    --resume
+```
+
+### How to run (full keyframe set, Jina VLM MLX on Apple Silicon)
+
+```bash
+source .venv/bin/activate
+python scripts/generate_captions.py \
+    --backend jina-vlm-mlx \
+    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
+    --output-dir data/interim/captions/jina-vlm-mlx \
+    --model jinaai/jina-vlm-mlx \
+    --device mps \
+    --batch-size 1 \
+    --resume
+```
+
+`--device mps` (or `auto` on Apple Silicon) is recommended. `--batch-size 1`
+is the safe default on a 16 GB unified-memory Mac; see the batch-size note
+below.
+
+### Options
+
+- `--backend qwen2.5-vl|jina-vlm-mlx`: caption backend (default:
+  `qwen2.5-vl`).
+- `--keyframes-dir <dir>`: canonical keyframe artifact directory
+  (default: `data/keyframes/adaptive_sbd_v1`).
+- `--output-dir <dir>`: caption artifact output directory.
+- `--model <name>`: short model name or a full checkpoint id (default:
+  `Qwen2.5-VL-3B-Instruct` for `qwen2.5-vl`, `jinaai/jina-vlm-mlx` for
+  `jina-vlm-mlx`); for Qwen a name without `/` is resolved to `Qwen/<name>`.
+- `--device auto|cpu|mps|cuda`: device selection (auto: CUDA > MPS > CPU for
+  Qwen; MLX uses Metal, so `jina-vlm-mlx` accepts only `auto`/`mps`).
+- `--batch-size <n>`: images captioned per model invocation (default 4;
+  use 1 for `jina-vlm-mlx` on 16 GB).
+- `--max-records <n>`: only caption the first `n` records (small-scale
+  validation before the full run).
+- `--resume` / `--no-resume`: resume an interrupted build (default resume on);
+  an already-complete artifact is validated and returned without recompute.
+- `--prompt <text>`: override the documented retrieval caption prompt.
+- `--progress auto|on|off`: progress reporting (default auto).
+- `-v`: verbose logging.
+
+### Batch-size note for Jina VLM MLX on 16 GB unified memory
+
+Jina VLM MLX loads ~2 GB of 4-bit weights. Each keyframe is a 1280×720 image
+that the vision encoder processes independently (`mlx-vlm` generates one
+caption per image), so memory per image is dominated by the encoded vision
+features, not a persistent batch buffer. `--batch-size 1` is the safe,
+recommended setting on a 16 GB Mac. `--batch-size > 1` is generally safe
+(batches only pipeline bookkeeping, not a single fused model call), but keep
+an eye on peak memory if macOS reports pressure; if so, lower it. The
+pipeline falls back to per-image captioning on any batch failure, so a large
+`--batch-size` never produces a crash-only outcome.
+
+### Output
+
+The artifact directory contains:
+
+- `manifest.json` — versioned metadata (model, checkpoint, device,
+  `batch_size`, `prompt`, record/video/failed counts, source, timestamps);
+- `captions.ndjson` — one `KeyframeCaption` per keyframe, in source row
+  order, each with `video_id`, `keyframe_ordinal`, `frame_index`, `caption`,
+  `status`, and optional `error`;
+- `checkpoint.json` — resume state, present only while the build is
+  incomplete (deleted on completion).
+
+Row `i` of `captions.ndjson` always corresponds to line `i` of the source
+`frames.ndjson`. A missing/corrupted image yields an `error` record (empty
+caption) instead of aborting the run, so row alignment is preserved.
+
+### Small-scale validation
+
+Before the full run, validate the workflow on a small subset:
+
+```bash
+python scripts/generate_captions.py \
+    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
+    --output-dir /tmp/captions-smoke \
+    --max-records 100 \
+    --batch-size 4
+```
+
+A small successful run verifies input discovery, model loading, output
+schema, checkpoint behavior, and downstream compatibility.
+
+### Reproducibility notes
+
+- Qwen generation uses `do_sample=False`; Jina VLM MLX uses deterministic
+  decoding for stable output.
+- Input order is deterministic (source file order).
+- The exact `prompt` is recorded in `manifest.json`; resuming with a changed
+  `prompt`, `model`, checkpoint, source, or record count is rejected.
+
+The pipeline lives in `aic2026.caption_generation` (reusable, tested in
+`tests/test_caption_generation.py`); `scripts/generate_captions.py` is a thin
+CLI. Caption embedding / retrieval fusion is not implemented yet.
+
+## 27. OCR generation (PaddleOCR PP-OCRv5)
+
+The OCR stage augments canonical keyframes with extracted text as a separate
+retrieval modality, producing a resumable OCR artifact under
+`data/interim/ocr/<artifact_id>/`. It reads the canonical keyframe artifact
+(`frames.ndjson` + `images/`) and never modifies it. The keyframe artifact,
+the CLIP embedding/index pipeline, and existing index artifacts are untouched.
+
+OCR is deterministic text extraction: it never translates. Vietnamese and
+English text is kept as-is; `ocr_text_normalized` is a lowercase,
+whitespace-normalized copy with duplicated symbols removed (Vietnamese
+accents are preserved). Retrieval fusion (OCR-text embedding / BM25 fused
+with CLIP) is a separate, future stage.
+
+### Prerequisites
+
+```bash
+source .venv/bin/activate
+pip install -e '.[ocr]'   # paddleocr>=3.0, paddlepaddle>=3.0, numpy, Pillow
+```
+
+For GPU inference on a Modal instance, install the GPU build of PaddlePaddle
+per the PaddlePaddle install guide (e.g. `paddlepaddle-gpu`) in addition to
+`paddleocr`; the pipeline then resolves `--device cuda` to PaddleOCR's
+`gpu:0`. PaddleOCR is imported lazily only when the CLI runs; the core
+package and its unit tests do not require the runtime.
+
+### How to run (full keyframe set)
+
+```bash
+source .venv/bin/activate
+python scripts/generate_ocr.py \
+    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
+    --output-dir data/interim/ocr/paddleocr-v5 \
+    --backend paddleocr \
+    --languages vi,en \
+    --device cuda \
+    --batch-size 16 \
+    --resume
+```
+
+### Options
+
+- `--backend paddleocr`: OCR backend (default: `paddleocr`).
+- `--keyframes-dir <dir>`: canonical keyframe artifact directory
+  (default: `data/keyframes/adaptive_sbd_v1`).
+- `--output-dir <dir>`: OCR artifact output directory.
+- `--model <name>`: PaddleOCR model family (default: `PP-OCRv5_mobile`).
+- `--languages vi,en`: comma-separated OCR languages (default: `vi,en`);
+  Vietnamese and English are both recognized and kept as-is.
+- `--device auto|cuda|cpu|mps`: device selection (auto: CUDA > CPU;
+  PaddlePaddle has no MPS/Metal backend, so `mps` is mapped to `cpu`).
+- `--batch-size <n>`: keyframe images passed to the OCR engine per call
+  (default: 16).
+- `--max-records <n>`: only process the first `n` records (small-scale
+  validation before the full run).
+- `--resume` / `--no-resume`: resume an interrupted build (default resume
+  on); an already-complete artifact is validated and returned without
+  recompute.
+- `--upscale-factor <f>`: preprocess upscale for small text (default `1.0`,
+  off; e.g. `2.0`).
+- `--contrast <f>`: preprocess contrast enhancement (default `1.0`,
+  unchanged).
+- `--sharpen`: preprocess sharpening (off by default).
+- `--progress auto|on|off`: progress reporting (default auto).
+- `-v`: verbose logging.
+
+### Output
+
+The artifact directory contains:
+
+- `manifest.json` — versioned metadata (backend, model, languages, device,
+  `batch_size`, record/video/failed counts, source, timestamps);
+- `ocr.ndjson` — one `KeyframeOcr` per keyframe, in source row order, each
+  with `video_id`, `keyframe_ordinal`, `frame_index`, `ocr_text`,
+  `ocr_text_normalized`, `ocr_lines` (text + confidence + bbox per line),
+  `status`, and optional `error`;
+- `checkpoint.json` — resume state, present only while the build is
+  incomplete (deleted on completion).
+
+Row `i` of `ocr.ndjson` always corresponds to line `i` of the source
+`frames.ndjson`. A missing/corrupted image yields an `error` record (empty
+text) instead of aborting the run, so row alignment is preserved.
+
+### Small-scale validation
+
+Before the full run, validate the workflow on a small subset:
+
+```bash
+python scripts/generate_ocr.py \
+    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
+    --output-dir /tmp/ocr-smoke \
+    --max-records 100 \
+    --batch-size 16
+```
+
+A small successful run verifies input discovery, model loading, output
+schema, checkpoint behavior, and downstream compatibility.
+
+### Reproducibility notes
+
+- Input order is deterministic (source file order); PaddleOCR extraction is
+  deterministic per image.
+- The exact `backend`, `model`, `languages`, and preprocessing options are
+  recorded in `manifest.json`; resuming with a changed backend, model,
+  languages, source, or record count is rejected.
+
+The pipeline lives in `aic2026.ocr_generation` (reusable, tested in
+`tests/test_ocr_generation.py`); `scripts/generate_ocr.py` is a thin CLI.
+OCR-text embedding / retrieval fusion is not implemented yet.

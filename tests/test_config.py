@@ -71,3 +71,76 @@ def test_default_config_behavior_unchanged() -> None:
     assert config.openclip.model_name == "ViT-B-32"
     assert config.openclip.pretrained == "laion2b_s34b_b79k"
     assert config.openclip.device == "auto"
+
+
+def test_jina_experiment_config_loads_active_backend() -> None:
+    """The Jina CLIP v2 experiment config selects the Jina model section."""
+    config = load_config(EXPERIMENTS_DIR / "jina-clip-v2.yaml")
+
+    assert config.jina is not None
+    assert config.jina.backend == "jina-clip"
+    assert config.jina.model_name == "jina-clip-v2"
+    assert config.jina.pretrained == "jinaai/jina-clip-v2"
+    assert config.jina.device == "auto"
+    assert config.jina.precision == "fp32"
+    assert config.jina.normalization == "l2"
+    assert config.jina.preprocessing_id == "jina-clip-v2-preprocess-v1"
+    assert config.jina.tokenizer_id == "jina-clip-v2-tokenizer-v1"
+    # The Jina section is the active model for prediction runs.
+    assert config.model is config.jina
+    assert config.model_config == {
+        "backend": "jina-clip",
+        "model_name": "jina-clip-v2",
+        "pretrained": "jinaai/jina-clip-v2",
+        "device": "auto",
+        "precision": "fp32",
+        "normalization": "l2",
+        "preprocessing_id": "jina-clip-v2-preprocess-v1",
+        "tokenizer_id": "jina-clip-v2-tokenizer-v1",
+    }
+
+
+def test_openclip_only_configs_have_no_jina_section() -> None:
+    """Configs without a jina section keep OpenCLIP as the active model."""
+    for filename in ("vit-b-32-openai.yaml", "vit-l-14-laion2b.yaml"):
+        config = load_config(EXPERIMENTS_DIR / filename)
+        assert config.jina is None
+        assert config.model is config.openclip
+        assert config.model_config["backend"] == "openclip"
+
+
+def test_jina_config_embedding_space_matches_index_manifest() -> None:
+    """The Jina config reconstructs the exact space recorded in the index.
+
+    This is the compatibility contract the QA runner enforces before search:
+    the query encoder built from the config must report the same space as the
+    ``jina-v2-full`` index artifact.
+    """
+    index_manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "data/interim/indexes/jina-v2-full/manifest.json"
+    )
+    if not index_manifest_path.is_file():
+        pytest.skip("jina-v2-full index artifact not available")
+
+    config = load_config(EXPERIMENTS_DIR / "jina-clip-v2.yaml")
+    import json
+
+    index_space = json.loads(index_manifest_path.read_text(encoding="utf-8"))["embedding_space"]
+    assert index_space["backend"] == "jina-clip"
+    assert index_space["model_id"] == "jina-clip-v2"
+    assert index_space["checkpoint_id"] == "jinaai/jina-clip-v2"
+    assert index_space["embedding_dim"] == 1024
+    assert index_space["output_dtype"] == "float32"
+    assert index_space["normalization"] == "l2"
+
+    # The space_id construction mirrors model_backends/jina.py and the
+    # embedding artifact; the two config fields that build it are the
+    # processing/tokenizer revision labels.
+    jina = config.jina
+    assert jina is not None
+    expected_space_id = (
+        f"jina-clip:{jina.model_name}:{jina.pretrained}:{jina.precision}:"
+        f"{jina.normalization}:{jina.preprocessing_id}:{jina.tokenizer_id}"
+    )
+    assert expected_space_id == index_space["space_id"]

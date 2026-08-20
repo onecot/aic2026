@@ -10,13 +10,13 @@ unit tests independent of optional model runtime dependencies.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, cast
 
 import numpy as np
 
+from aic2026.config import JinaClipConfig
 from aic2026.embeddings import Embedding, EmbeddingKind, EmbeddingSpace, Normalization
 from aic2026.image_embedder import DEFAULT_PRETRAINED, resolve_device
 
@@ -160,50 +160,6 @@ def _embedding_dim(model: Any) -> int:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
             return value
     raise ValueError("Jina CLIP model does not expose a positive embedding dimension")
-
-
-@dataclass(frozen=True)
-class JinaClipConfig:
-    """Configuration for the optional Jina CLIP embedding backend.
-
-    Fields:
-        - backend: must be ``"jina-clip"``.
-        - model_name: model architecture name (e.g. ``jina-clip-v2``).
-        - pretrained: HuggingFace repository id or checkpoint path.
-        - device: ``auto``, ``cpu``, ``mps``, or ``cuda``.
-        - precision: output precision, ``fp32`` or ``fp16``.
-        - normalization: common image/text vector convention, ``l2`` or
-          ``none``.
-        - preprocessing_id: preprocessing pipeline revision identifier.
-        - tokenizer_id: tokenizer revision identifier.
-    """
-
-    backend: str
-    model_name: str
-    pretrained: str
-    device: str
-    precision: str
-    normalization: str
-    preprocessing_id: str
-    tokenizer_id: str
-
-    def __post_init__(self) -> None:
-        if self.backend != BACKEND:
-            raise ValueError(f"jina-clip backend must be {BACKEND!r}, got {self.backend!r}")
-        for name, value in (
-            ("model_name", self.model_name),
-            ("pretrained", self.pretrained),
-            ("preprocessing_id", self.preprocessing_id),
-            ("tokenizer_id", self.tokenizer_id),
-        ):
-            if not isinstance(value, str) or value == "":
-                raise ValueError(f"{name} must be a non-empty string")
-        if self.device not in ("auto", "cpu", "mps", "cuda"):
-            raise ValueError("device must be one of: auto, cpu, mps, cuda")
-        if self.precision not in ("fp32", "fp16"):
-            raise ValueError("precision must be one of: fp32, fp16")
-        if self.normalization not in ("l2", "none"):
-            raise ValueError("normalization must be one of: l2, none")
 
 
 class JinaClipEncoder:

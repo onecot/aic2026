@@ -22,8 +22,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from aic2026.config import OpenClipConfig
-from aic2026.embeddings import EmbeddingSpace
+from aic2026.config import Config, OpenClipConfig
+from aic2026.embeddings import EmbeddingEncoder, EmbeddingSpace
 
 #: Backend used when a bare model name (no ``backend:`` prefix) is given.
 DEFAULT_BACKEND = "openclip"
@@ -291,3 +291,31 @@ def create_image_embedder(
         precision=precision,
         config=config,
     )
+
+
+def create_text_encoder(config: Config) -> EmbeddingEncoder:
+    """Create the text encoder selected by the active model section.
+
+    Jina CLIP is selected when ``config.jina`` is present; otherwise the
+    OpenCLIP encoder is used. Both satisfy the
+    :class:`aic2026.embeddings.EmbeddingEncoder` protocol (``encode_text`` +
+    ``embedding_space``) and are imported lazily so the core package stays
+    independent of optional model runtimes.
+
+    Expected input:
+        - config: effective configuration with an optional ``jina`` section.
+
+    Returns:
+        - A ready-to-use text encoder matching the active embedding space.
+
+    Raises:
+        - RuntimeError: if the selected backend's optional dependencies or
+          model/checkpoint cannot be loaded.
+    """
+    if config.jina is not None:
+        from aic2026.model_backends.jina import JinaClipEncoder
+
+        return JinaClipEncoder(config.jina)
+    from aic2026.model_backends.openclip import OpenClipEncoder
+
+    return OpenClipEncoder(config.openclip)

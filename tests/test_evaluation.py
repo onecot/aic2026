@@ -159,6 +159,65 @@ def test_query_contract_rejects_invalid_optional_task_fields() -> None:
         )
 
 
+def test_trake_row_with_empty_frame_fields_and_gt_events_loads(tmp_path: Path) -> None:
+    """A valid TRAKE row may leave gt_frame_start/gt_frame_end empty.
+
+    TRAKE ground truth identifies an event (gt_events) within a video; the
+    frame range is optional and maps to ``FrameRange(0, 0)``.
+    """
+    path = _write_csv(
+        tmp_path / "eval_set.csv",
+        [
+            _row(
+                query_id="trake_001",
+                task="trake",
+                gt_frame_start="",
+                gt_frame_end="",
+                gt_events="2366-2442;3334-3410;4130-4206;6306-6382",
+            ),
+        ],
+    )
+
+    evaluation_set = load_eval_set(path)
+    query = evaluation_set.get_query("trake_001")
+
+    assert len(evaluation_set) == 1
+    assert query.task is EvaluationTask.TRAKE
+    assert query.ground_truth_frame_range == FrameRange(0, 0)
+    assert query.answer is None
+    assert query.event == EventAnnotation("2366-2442;3334-3410;4130-4206;6306-6382")
+
+
+def test_trake_row_without_gt_events_fails_even_with_empty_frames(tmp_path: Path) -> None:
+    """TRAKE rows must define gt_events even when frame fields are empty."""
+    path = _write_csv(
+        tmp_path / "eval_set.csv",
+        [
+            _row(
+                query_id="trake_001",
+                task="trake",
+                gt_frame_start="",
+                gt_frame_end="",
+                gt_events="",
+            ),
+        ],
+    )
+
+    with pytest.raises(EvaluationDatasetError, match="TRAKE queries require a non-empty event annotation"):
+        load_eval_set(path)
+
+
+def test_kis_and_qa_still_require_frame_fields(tmp_path: Path) -> None:
+    """KIS and QA rows must still provide gt_frame_start/gt_frame_end."""
+    for task in ("kis", "qa"):
+        overrides = {"query_id": f"{task}_001", "task": task, "gt_frame_start": "", "gt_frame_end": ""}
+        if task == "qa":
+            overrides["gt_answer"] = "Đáp án"
+        path = _write_csv(tmp_path / f"{task}.csv", [_row(**overrides)])
+        with pytest.raises(EvaluationDatasetError, match="gt_frame_start must be a non-empty string"):
+            load_eval_set(path)
+
+
 def test_real_eval_set_loads_when_available() -> None:
     path = Path(__file__).resolve().parents[1] / "data/eval/eval_set.csv"
     if not path.is_file():

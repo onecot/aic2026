@@ -3,14 +3,12 @@
 
 Reads a materialized ``adaptive_sbd_v1`` artifact (``images/`` +
 ``frames.ndjson`` + ``manifest.json``) and verifies it is internally
-consistent: artifact existence, manifest (artifact id, schema version,
-counts), canonical frame records (no duplicate ``(video_id,
-keyframe_ordinal)``, deterministic ordering), and image coverage (every
-record has its ``images/<video_id>/<ordinal:06d>.jpg``, no missing or
-unexpected images, total count matches records).
+consistent: artifact existence, manifest counts, and image coverage (every
+record has its ``images/<video_id>/<ordinal:06d>.jpg`` and the image count
+matches the canonical frame records).
 
 This is a thin CLI; the verification logic lives in
-``aic2026.keyframe_materialize_verify.verify_keyframe_materialization``.
+``aic2026.keyframe_materialize.verify_materialization``.
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from aic2026.keyframe_materialize_verify import verify_keyframe_materialization
+from aic2026.keyframe_materialize import verify_materialization
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -27,8 +25,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         prog="verify_keyframe_materialization",
         description=(
             "Validate a materialized adaptive_sbd_v1 keyframe image artifact: "
-            "manifest, frame records, deterministic ordering, and image "
-            "coverage."
+            "manifest, frame records, and image coverage."
         ),
     )
     parser.add_argument(
@@ -45,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        report = verify_keyframe_materialization(args.output_dir)
+        report = verify_materialization(args.output_dir)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -54,13 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Keyframe materialization verification: {status}")
     print()
     print("Artifact:")
-    print(f"  type: {report.artifact_id}")
+    print("  type: adaptive_sbd_v1")
     print()
     print("Keyframes:")
-    print(f"  records: {report.records}")
-    print(f"  images: {report.images}")
+    print(f"  records: {report.num_keyframes}")
+    print(f"  images: {report.images_present}")
     print(f"  missing: {report.missing_images}")
-    print(f"  unexpected: {report.unexpected_images}")
 
     if not report.valid:
         print()

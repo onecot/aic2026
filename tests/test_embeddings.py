@@ -105,6 +105,23 @@ def test_incompatible_query_space_is_rejected() -> None:
         validate_query_compatibility(query, other)
 
 
+def test_model_version_is_not_comparison_relevant() -> None:
+    """A differing build-env model runtime version does not split a space."""
+    query = _embedding("text")
+    index = _space(model_version="4.46.3")
+    assert query.space.is_compatible_with(index)
+    validate_query_compatibility(query, index)
+
+
+def test_is_compatible_with_still_requires_identity_match() -> None:
+    """Compatibility excludes only model_version, not the space identity."""
+    base = _space()
+    assert base.is_compatible_with(_space(model_version="9.9.9"))
+    assert not base.is_compatible_with(_space(space_id="other-space"))
+    assert not base.is_compatible_with(_space(embedding_dim=5))
+    assert not base.is_compatible_with(_space(normalization="none"))
+
+
 def test_retrieval_requires_compatible_typed_query_for_identified_index(tmp_path: Path) -> None:
     """Retrieval validates space metadata before running cosine similarity."""
     space = _space()

@@ -7,6 +7,20 @@ the raw BTC dataset. It exposes the same small accessor API that
 ``build_index`` requires so an index can be built directly from stored
 embeddings.
 
+All three embedding artifact manifest schemas are accepted, matching
+``aic2026.embedding_verify``:
+
+- ``EmbeddingManifest`` (``aic2026.embedding_artifact``), written by the
+  embedding runner / ``embed_shard.py`` merge target;
+- ``ShardManifest`` (``aic2026.embedding_shard``), written by
+  ``scripts/embed_shard.py`` per completed shard;
+- ``MergeManifest`` (``aic2026.embedding_merge``), written by
+  ``scripts/merge_embedding_shards.py`` for the merged output.
+
+Shard and merge manifests are normalized in memory into the canonical
+``EmbeddingManifest`` contract, so ``build_index`` can consume any artifact
+the pipeline produces without a new on-disk format.
+
 Data flow::
 
     EmbeddingArtifactDataset (reads embedding artifact)
@@ -34,22 +48,111 @@ Typical usage::
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import numpy as np
 
-from aic2026.canonical import ClipEmbedding, KeyframeTiming, VideoId, VideoMetadata
+from aic2026.canonical import (
+    CANONICAL_SCHEMA_VERSION,
+    ClipEmbedding,
+    KeyframeTiming,
+    VideoId,
+    VideoMetadata,
+)
 from aic2026.dataset import CorruptRecordError, MissingRecordError
 from aic2026.embedding_artifact import (
+    EMBEDDING_ARTIFACT_SCHEMA_VERSION,
     EMBEDDINGS_FILENAME,
     FRAMES_FILENAME,
     MANIFEST_FILENAME,
     EmbeddingManifest,
     iter_frames,
-    read_manifest,
 )
+from aic2026.embedding_merge import MergeManifest
+from aic2026.embedding_shard import ShardManifest
 from aic2026.embeddings import EmbeddingSpace
+
+
+def as_embedding_manifest(artifact_dir: Path, payload: dict[str, Any]) -> EmbeddingManifest:
+    """Normalize any supported embedding-artifact manifest to ``EmbeddingManifest``.
+
+    Dispatch follows ``aic2026.embedding_verify``: a ``source_shards`` key
+    means a merge manifest, a ``worker_id`` key means a shard manifest, and
+    anything else is treated as the canonical ``EmbeddingManifest``. Shard and
+    merge manifests carry no ``artifact_id``, so the artifact directory name is
+    used as the derived identity; the dtype is taken from the validated
+    ``embedding_space``. No on-disk files are written.
+
+    Expected input:
+        - artifact_dir: the artifact directory (provides the derived
+          ``artifact_id`` and, for merge manifests, the video count).
+        - payload: the parsed ``manifest.json`` object.
+
+    Returns:
+        - A canonical :class:`EmbeddingManifest`.
+
+    Raises:
+        - CorruptRecordError: if the payload is not one of the supported
+          manifest schemas.
+        - KeyError / TypeError / ValueError: propagated from the schema
+          validators for an invalid manifest of a recognized schema.
+    """
+    if "source_shards" in payload:
+        merge = MergeManifest.from_dict(payload)
+        return EmbeddingManifest(
+            schema_version=EMBEDDING_ARTIFACT_SCHEMA_VERSION,
+            artifact_id=artifact_dir.name,
+            embedding_space=merge.embedding_space,
+            embedding_dim=merge.embedding_dim,
+            embedding_dtype=merge.embedding_space.output_dtype,
+            num_rows=merge.total_embeddings,
+            num_videos=_count_artifact_videos(artifact_dir),
+            source_dataset_id=",".join(merge.source_shards),
+            canonical_schema_version=CANONICAL_SCHEMA_VERSION,
+            created_at=merge.created_at,
+        )
+    if "worker_id" in payload:
+        shard = ShardManifest.from_dict(payload)
+        return EmbeddingManifest(
+            schema_version=EMBEDDING_ARTIFACT_SCHEMA_VERSION,
+            artifact_id=artifact_dir.name,
+            embedding_space=shard.embedding_space,
+            embedding_dim=shard.embedding_dim,
+            embedding_dtype=shard.dtype,
+            num_rows=shard.num_embeddings,
+            num_videos=shard.num_videos,
+            source_dataset_id=shard.source_frames,
+            canonical_schema_version=CANONICAL_SCHEMA_VERSION,
+            created_at=shard.created_at,
+        )
+    return EmbeddingManifest.from_dict(payload)
+
+
+def _count_artifact_videos(artifact_dir: Path) -> int:
+    """Return the number of distinct videos in the artifact's ``frames.ndjson``.
+
+    Merge manifests do not record a video count, so it is derived from the
+    frames collection.
+
+    Raises:
+        - CorruptRecordError: if ``frames.ndjson`` is absent or malformed.
+    """
+    frames_path = artifact_dir / FRAMES_FILENAME
+    if not frames_path.is_file():
+        raise CorruptRecordError(
+            f"embedding artifact missing {FRAMES_FILENAME}: {frames_path}"
+        )
+    seen: set[str] = set()
+    try:
+        for timing in iter_frames(frames_path):
+            seen.add(timing.keyframe.video_id.value)
+    except ValueError as exc:
+        raise CorruptRecordError(
+            f"embedding {FRAMES_FILENAME} is malformed: {exc}"
+        ) from exc
+    return len(seen)
 
 
 class EmbeddingArtifactDataset:
@@ -57,7 +160,9 @@ class EmbeddingArtifactDataset:
 
     Expected input:
         - artifact_dir: directory containing a valid embedding artifact
-          (``manifest.json``, ``embeddings.npy``, ``frames.ndjson``).
+          (``manifest.json``, ``embeddings.npy``, ``frames.ndjson``). Any of
+          the three supported manifest schemas (``EmbeddingManifest``,
+          ``ShardManifest``, ``MergeManifest``) is accepted.
 
     Raises:
         - FileNotFoundError: if ``artifact_dir`` does not exist.
@@ -78,8 +183,14 @@ class EmbeddingArtifactDataset:
                 f"embedding artifact missing {MANIFEST_FILENAME}: {manifest_path}"
             )
         try:
-            manifest = read_manifest(manifest_path)
-        except (OSError, ValueError) as exc:
+            with manifest_path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict):
+                raise CorruptRecordError(
+                    f"embedding artifact manifest must be a JSON object: {manifest_path}"
+                )
+            manifest = as_embedding_manifest(artifact_dir, payload)
+        except (KeyError, TypeError, ValueError, OSError) as exc:
             raise CorruptRecordError(
                 f"embedding artifact manifest is unreadable: {exc}"
             ) from exc

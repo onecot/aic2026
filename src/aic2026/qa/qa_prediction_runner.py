@@ -156,7 +156,7 @@ def run_qa_prediction(
 
     queries = select_qa_queries(evaluation_set, config.query_subset_ids)
     retriever = IndexRetriever(config.index_artifact_dir)
-    spaces_compatible = encoder.embedding_space == retriever.manifest.embedding_space
+    spaces_compatible = encoder.embedding_space.is_compatible_with(retriever.manifest.embedding_space)
     override_used = False
     if not spaces_compatible:
         if not config.allow_embedding_space_mismatch:
@@ -384,7 +384,7 @@ def _require_compatible_spaces(model_space: EmbeddingSpace, manifest: IndexManif
     index_space = manifest.embedding_space
     if index_space is None:
         raise ValueError("index artifact is missing embedding-space metadata")
-    if model_space != index_space:
+    if not model_space.is_compatible_with(index_space):
         raise ValueError(
             "incompatible embedding spaces between encoder and index: "
             f"model {model_space.space_id!r} ({model_space.backend}/{model_space.model_id}) != "
@@ -418,7 +418,7 @@ def _search_candidates(
         validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
         return retriever.search(query_embedding, top_k=top_k)
 
-    if query_embedding.space == retriever.manifest.embedding_space:
+    if query_embedding.space.is_compatible_with(retriever.manifest.embedding_space):
         return retriever.search(query_embedding, top_k=top_k)
 
     index_space = retriever.manifest.embedding_space

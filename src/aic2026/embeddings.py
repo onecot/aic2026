@@ -101,6 +101,31 @@ class EmbeddingSpace:
             "model_version": self.model_version,
         }
 
+    def is_compatible_with(self, other: EmbeddingSpace) -> bool:
+        """Return whether two spaces are mutually comparable.
+
+        ``model_version`` is build-environment metadata (the installed model
+        runtime revision) and is intentionally excluded: vectors produced by
+        the same model/checkpoint/preprocessing convention live in the same
+        space regardless of the runtime patch that generated them.
+
+        Expected input:
+            - other: another embedding-space description.
+
+        Returns:
+            - True when every comparison-relevant field matches.
+        """
+        return (
+            self.backend == other.backend
+            and self.model_id == other.model_id
+            and self.checkpoint_id == other.checkpoint_id
+            and self.space_id == other.space_id
+            and self.embedding_dim == other.embedding_dim
+            and self.output_dtype == other.output_dtype
+            and self.normalization == other.normalization
+            and self.preprocessing_id == other.preprocessing_id
+        )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EmbeddingSpace:
         """Deserialize validated embedding-space metadata.
@@ -270,7 +295,7 @@ def validate_query_compatibility(query: Embedding, index_space: EmbeddingSpace) 
     Raises:
         - ValueError: if the query and index have different embedding spaces.
     """
-    if query.space != index_space:
+    if not query.space.is_compatible_with(index_space):
         raise ValueError(
             "incompatible embedding spaces: query "
             f"{query.space.space_id!r} ({query.space.backend}/{query.space.model_id}) != index "

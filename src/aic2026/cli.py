@@ -2,6 +2,7 @@
 
 Commands:
     inspect          - inspect the raw dataset and print a concise report.
+    build-index      - build a retrieval index artifact from an embedding artifact.
     predict-kis      - generate ranked KIS predictions from an index artifact.
     temporal-expand-kis - apply temporal window expansion to a KIS prediction
                           artifact and save an expanded prediction artifact.
@@ -26,8 +27,13 @@ import sys
 from pathlib import Path
 
 from aic2026.config import load_config
+from aic2026.dataset import DatasetError
+from aic2026.embedding_dataset import EmbeddingArtifactDataset
 from aic2026.evaluation import EvaluationTask, load_eval_set
+from aic2026.index_artifact import validate_index_files
+from aic2026.index_builder import build_index
 from aic2026.inspection import DatasetReport, inspect_dataset
+from aic2026.image_embedder import create_text_encoder
 from aic2026.kis_prediction_runner import (
     KisPredictionRunnerConfig,
     load_kis_predictions_for_scoring,
@@ -103,6 +109,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of object JSON files to schema-check per video (0 to skip).",
     )
     inspect_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    build_index_parser = subparsers.add_parser(
+        "build-index",
+        help="Build a retrieval index artifact from a verified embedding artifact.",
+    )
+    build_index_parser.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="path to a verified embedding artifact directory (manifest.json + embeddings.npy + frames.ndjson)",
+    )
+    build_index_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="path for the output index artifact directory (created if absent)",
+    )
+    build_index_parser.add_argument(
+        "--artifact-id",
+        required=True,
+        help="unique run identity recorded in the index manifest",
+    )
+    build_index_parser.add_argument(
+        "--batch-flush",
+        type=int,
+        default=1000,
+        help="rows between memmap flush and checkpoint write (default: 1000)",
+    )
+    build_index_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="run validate_index_files on the completed artifact and fail if inconsistent",
+    )
+    build_index_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -929,6 +974,31 @@ def main(argv: list[str] | None = None) -> int:
         print_report(report)
         return 0
 
+    if args.command == "build-index":
+        try:
+            source = EmbeddingArtifactDataset(args.source)
+            manifest = build_index(
+                source,
+                args.output,
+                artifact_id=args.artifact_id,
+                batch_flush=args.batch_flush,
+                embedding_space=source.embedding_space,
+            )
+        except (FileNotFoundError, ValueError, OSError, DatasetError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Index artifact: {args.output}")
+        print(f"Artifact id: {manifest.artifact_id}")
+        print(f"Rows: {manifest.num_rows}  Videos: {manifest.num_videos}")
+        if args.verify:
+            problems = validate_index_files(manifest, Path(args.output))
+            if problems:
+                for problem in problems:
+                    print(f"validation: {problem}", file=sys.stderr)
+                return 1
+            print("Verification: OK")
+        return 0
+
     if args.command == "predict-kis":
         config = load_config(args.config)
         try:
@@ -967,22 +1037,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "predict-qa":
         config = load_config(args.config)
         try:
-            encoder = OpenClipEncoder(config.openclip)
+            encoder = create_text_encoder(config)
             artifact = run_qa_prediction(
                 QaPredictionRunnerConfig(
                     evaluation_set_path=args.evaluation_set,
                     index_artifact_dir=args.index_artifact,
                     prediction_output_dir=args.output,
-                    model_config={
-                        "backend": config.openclip.backend,
-                        "model_name": config.openclip.model_name,
-                        "pretrained": config.openclip.pretrained,
-                        "device": config.openclip.device,
-                        "precision": config.openclip.precision,
-                        "normalization": config.openclip.normalization,
-                        "preprocessing_id": config.openclip.preprocessing_id,
-                        "tokenizer_id": config.openclip.tokenizer_id,
-                    },
+                    model_config=config.model_config,
                     top_k=args.top_k,
                     query_text_field=args.query_text_field,
                     video_aggregation=None if args.video_aggregation == "none" else args.video_aggregation,

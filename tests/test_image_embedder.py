@@ -17,6 +17,7 @@ from aic2026.image_embedder import (
     _parse_model_spec,
     available_devices,
     create_image_embedder,
+    create_text_encoder,
     register_embedder,
     resolve_device,
 )
@@ -336,3 +337,75 @@ def test_openclip_adapter_encode_images_stacks_vectors(monkeypatch: pytest.Monke
 def test_openclip_adapter_reuses_wrapped_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _adapter(monkeypatch)
     assert adapter.encode_images(["one"])[0].shape == (3,)
+
+
+# ------------------------------------------------------------------ text encoder selection
+
+
+def _make_config(*, with_jina: bool) -> Any:
+    from aic2026.config import Config, JinaClipConfig, OpenClipConfig
+
+    from pathlib import Path
+
+    openclip = OpenClipConfig(
+        backend="openclip",
+        model_name="ViT-L-14",
+        pretrained="laion2b_s32b_b82k",
+        device="cpu",
+        precision="fp32",
+        normalization="l2",
+        preprocessing_id="openclip-default-v1",
+        tokenizer_id="openclip-default-v1",
+    )
+    jina = None
+    if with_jina:
+        jina = JinaClipConfig(
+            backend="jina-clip",
+            model_name="jina-clip-v2",
+            pretrained="jinaai/jina-clip-v2",
+            device="cpu",
+            precision="fp32",
+            normalization="l2",
+            preprocessing_id="jina-clip-v2-preprocess-v1",
+            tokenizer_id="jina-clip-v2-tokenizer-v1",
+        )
+    return Config(
+        data_raw_dir=Path("data/raw/aic2026_batch1"),
+        data_indexes_dir=Path("data/interim/indexes"),
+        openclip=openclip,
+        jina=jina,
+    )
+
+
+def test_create_text_encoder_selects_openclip_without_jina_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+
+    class _FakeOpenClipEncoder:
+        def __init__(self, config: Any) -> None:
+            captured.append(config.backend)
+
+    monkeypatch.setattr(
+        "aic2026.model_backends.openclip.OpenClipEncoder", _FakeOpenClipEncoder
+    )
+    encoder = create_text_encoder(_make_config(with_jina=False))
+    assert captured == ["openclip"]
+    assert isinstance(encoder, _FakeOpenClipEncoder)
+
+
+def test_create_text_encoder_selects_jina_when_jina_section_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+
+    class _FakeJinaClipEncoder:
+        def __init__(self, config: Any) -> None:
+            captured.append(config.backend)
+
+    monkeypatch.setattr(
+        "aic2026.model_backends.jina.JinaClipEncoder", _FakeJinaClipEncoder
+    )
+    encoder = create_text_encoder(_make_config(with_jina=True))
+    assert captured == ["jina-clip"]
+    assert isinstance(encoder, _FakeJinaClipEncoder)

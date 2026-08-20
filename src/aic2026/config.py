@@ -13,6 +13,7 @@ This module loads the base default configuration from
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -64,6 +65,50 @@ class OpenClipConfig:
 
 
 @dataclass(frozen=True)
+class JinaClipConfig:
+    """Configuration for the optional Jina CLIP embedding backend.
+
+    Fields:
+        - backend: must be ``"jina-clip"``.
+        - model_name: Jina architecture name (e.g. ``jina-clip-v2``).
+        - pretrained: HuggingFace repository id or checkpoint path.
+        - device: ``auto``, ``cpu``, ``mps``, or ``cuda``.
+        - precision: output precision, ``fp32`` or ``fp16``.
+        - normalization: common image/text vector convention, ``l2`` or
+          ``none``.
+        - preprocessing_id: preprocessing pipeline revision identifier.
+        - tokenizer_id: tokenizer revision identifier.
+    """
+
+    backend: str
+    model_name: str
+    pretrained: str
+    device: str
+    precision: str
+    normalization: str
+    preprocessing_id: str
+    tokenizer_id: str
+
+    def __post_init__(self) -> None:
+        if self.backend != "jina-clip":
+            raise ValueError(f"jina-clip backend must be 'jina-clip', got {self.backend!r}")
+        for name, value in (
+            ("model_name", self.model_name),
+            ("pretrained", self.pretrained),
+            ("preprocessing_id", self.preprocessing_id),
+            ("tokenizer_id", self.tokenizer_id),
+        ):
+            if not isinstance(value, str) or value == "":
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.device not in ("auto", "cpu", "mps", "cuda"):
+            raise ValueError("device must be one of: auto, cpu, mps, cuda")
+        if self.precision not in ("fp32", "fp16"):
+            raise ValueError("precision must be one of: fp32, fp16")
+        if self.normalization not in ("l2", "none"):
+            raise ValueError("normalization must be one of: l2, none")
+
+
+@dataclass(frozen=True)
 class Config:
     """Effective configuration for a run.
 
@@ -73,11 +118,35 @@ class Config:
         - data_indexes_dir: root directory for derived artifacts such as
           indexes (resolved to an absolute path when possible).
         - openclip: validated configuration for the OpenCLIP backend.
+        - jina: optional validated configuration for the Jina CLIP backend.
+          When present, it is the active model section for prediction runs;
+          otherwise the OpenCLIP section is used.
     """
 
     data_raw_dir: Path
     data_indexes_dir: Path
     openclip: OpenClipConfig
+    jina: JinaClipConfig | None = None
+
+    @property
+    def model(self) -> OpenClipConfig | JinaClipConfig:
+        """Return the active backend configuration for prediction runs."""
+        return self.jina if self.jina is not None else self.openclip
+
+    @property
+    def model_config(self) -> dict[str, Any]:
+        """Return the active model section as a JSON-safe metadata dictionary."""
+        model = self.model
+        return {
+            "backend": model.backend,
+            "model_name": model.model_name,
+            "pretrained": model.pretrained,
+            "device": model.device,
+            "precision": model.precision,
+            "normalization": model.normalization,
+            "preprocessing_id": model.preprocessing_id,
+            "tokenizer_id": model.tokenizer_id,
+        }
 
 
 def project_root() -> Path:
@@ -128,7 +197,21 @@ def load_config(path: Path | str | None = None) -> Config:
     config_path = Path(path) if path is not None else default_config_path()
     with config_path.open(encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
-    openclip_payload = payload["models"]["openclip"]
+    models_payload = payload["models"]
+    openclip_payload = models_payload["openclip"]
+    jina_payload = models_payload.get("jina")
+    jina: JinaClipConfig | None = None
+    if jina_payload is not None:
+        jina = JinaClipConfig(
+            backend=jina_payload["backend"],
+            model_name=jina_payload["model_name"],
+            pretrained=jina_payload["pretrained"],
+            device=jina_payload["device"],
+            precision=jina_payload["precision"],
+            normalization=jina_payload["normalization"],
+            preprocessing_id=jina_payload["preprocessing_id"],
+            tokenizer_id=jina_payload["tokenizer_id"],
+        )
     return Config(
         data_raw_dir=_resolve(payload["data"]["raw_dir"]),
         data_indexes_dir=_resolve(payload["data"]["indexes_dir"]),
@@ -142,6 +225,7 @@ def load_config(path: Path | str | None = None) -> Config:
             preprocessing_id=openclip_payload["preprocessing_id"],
             tokenizer_id=openclip_payload["tokenizer_id"],
         ),
+        jina=jina,
     )
 
 

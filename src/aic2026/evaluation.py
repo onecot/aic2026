@@ -289,6 +289,20 @@ def _canonicalize_row(row: RawEvaluationRow, row_number: int) -> EvaluationQuery
         answer = _optional_text(row.gt_answer)
         event_text = _optional_text(row.gt_events)
         event = EventAnnotation(event_text) if event_text is not None else None
+        # Parse frame ranges task-awareally:
+        # - KIS/QA: gt_frame_start/end are required
+        # - TRAKE: gt_frame_start/end are optional (empty strings mean no specific range)
+        task_lower = task.value.lower() if isinstance(task, EvaluationTask) else task.strip().lower()
+        if task_lower in ("kis", "qa"):
+            frame_start = _parse_frame(row.gt_frame_start, "gt_frame_start")
+            frame_end = _parse_frame(row.gt_frame_end, "gt_frame_end")
+        else:  # trake
+            # TRAKE allows empty frame ranges; use (0, 0) as default meaning "no specific range"
+            if row.gt_frame_start.strip() == "" and row.gt_frame_end.strip() == "":
+                frame_start, frame_end = 0, 0
+            else:
+                frame_start = _parse_frame(row.gt_frame_start, "gt_frame_start")
+                frame_end = _parse_frame(row.gt_frame_end, "gt_frame_end")
         return EvaluationQuery(
             query_id=_required_text(row.query_id, "query_id"),
             task=task,
@@ -296,8 +310,8 @@ def _canonicalize_row(row: RawEvaluationRow, row_number: int) -> EvaluationQuery
             query_text_en=_optional_text(row.query_text_en),
             ground_truth_video_id=VideoId(_required_text(row.gt_video_id, "gt_video_id")),
             ground_truth_frame_range=FrameRange(
-                start=_parse_frame(row.gt_frame_start, "gt_frame_start"),
-                end=_parse_frame(row.gt_frame_end, "gt_frame_end"),
+                start=frame_start,
+                end=frame_end,
             ),
             answer=answer,
             event=event,
@@ -337,12 +351,34 @@ def _optional_text(value: str) -> str | None:
 
 
 def _parse_frame(value: str, field_name: str) -> int:
-    """Parse a non-negative integer original-video frame index."""
+    """Parse a non-negative integer original-video frame index.
+
+    Expected input:
+        - value: a string good as an integer or a float-like integer
+          (e.g. ``"2040"`` or ``"2040.0"`` from Google Sheets export).
+
+    Returns:
+        - The parsed non-negative integer.
+
+    Raises:
+        - ValueError: if the value is empty, non-numeric, or a float that
+          is not a whole number.
+    """
     normalized = _required_text(value, field_name)
+    # Try direct int parse first (preserves existing behaviour for plain ints)
     try:
         parsed = int(normalized)
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must be an integer") from exc
+    except ValueError:
+        # Google Sheets export may produce float-like strings e.g. "2040.0".
+        # Accept if the float value is a whole number and non-negative.
+        try:
+            float_val = float(normalized)
+        except ValueError:
+            raise ValueError(f"{field_name} must be an integer")
+        if float_val == int(float_val) and float_val >= 0:
+            parsed = int(float_val)
+        else:
+            raise ValueError(f"{field_name} must be an integer")
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return parsed

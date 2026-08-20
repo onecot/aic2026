@@ -1,5 +1,6 @@
 """Tests for the embedding-artifact-backed dataset adapter."""
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,8 @@ from aic2026.embedding_artifact import (
     write_manifest,
 )
 from aic2026.embedding_dataset import EmbeddingArtifactDataset
+from aic2026.embedding_merge import MergeManifest
+from aic2026.embedding_shard import ShardManifest
 from aic2026.embeddings import EmbeddingSpace
 from aic2026.index_artifact import (
     iter_frames as iter_index_frames,
@@ -202,3 +205,129 @@ def test_discovery_and_missing_video(tmp_path: Path) -> None:
         next(dataset.iter_embeddings("L99_V999"))
     with pytest.raises(NotImplementedError):
         dataset.metadata("L21_V001")
+
+
+# --- Shard and merge manifest sources ----------------------------------------
+
+
+def _write_frames_and_matrix(artifact: Path, space: EmbeddingSpace) -> None:
+    """Write ``embeddings.npy`` and ``frames.ndjson`` for ``_ARTIFACT_VIDEOS``."""
+    frames: list[KeyframeTiming] = []
+    vectors: list[np.ndarray] = []
+    for video_id, count in _ARTIFACT_VIDEOS:
+        for ordinal in range(1, count + 1):
+            row_index = len(vectors)
+            vectors.append(np.full(_DIM, float(row_index), dtype=np.float32))
+            frames.append(
+                KeyframeTiming(
+                    keyframe=KeyframeKey(VideoId(video_id), ordinal),
+                    pts_time=(ordinal - 1) * 0.4,
+                    fps=25.0,
+                    frame_index=(ordinal - 1) * 10,
+                )
+            )
+    np.save(artifact / EMBEDDINGS_FILENAME, np.stack(vectors))
+    write_frames(artifact / FRAMES_FILENAME, frames)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_adapter_accepts_shard_manifest(tmp_path: Path) -> None:
+    """A completed shard (ShardManifest) is consumable by the adapter."""
+    shard = tmp_path / "worker_000"
+    shard.mkdir()
+    _write_frames_and_matrix(shard, _space())
+    _write_json(
+        shard / "manifest.json",
+        ShardManifest(
+            schema_version="1.0",
+            worker_id=0,
+            model="test-model",
+            embedding_dim=_DIM,
+            dtype="float32",
+            device="cpu",
+            num_embeddings=5,
+            num_videos=len(_ARTIFACT_VIDEOS),
+            source_frames="/tmp/frames.ndjson",
+            embedding_space=_space(),
+            created_at="2026-01-01T00:00:00Z",
+        ).to_dict(),
+    )
+
+    dataset = EmbeddingArtifactDataset(shard)
+    assert dataset.num_rows == 5
+    assert dataset.num_videos == 2
+    assert dataset.embedding_dim == _DIM
+    assert dataset.embedding_dtype == "float32"
+    assert dataset.embedding_space == _space()
+    assert dataset.artifact_id == "worker_000"
+    assert [v.value for v in dataset] == ["L21_V002", "L21_V001"]
+
+
+def test_adapter_accepts_merge_manifest(tmp_path: Path) -> None:
+    """A merged artifact (MergeManifest) is consumable by the adapter."""
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    _write_frames_and_matrix(merged, _space())
+    _write_json(
+        merged / "manifest.json",
+        MergeManifest(
+            schema_version="1.0",
+            model="test-model",
+            embedding_dim=_DIM,
+            total_embeddings=5,
+            source_shards=("/tmp/worker_000", "/tmp/worker_001"),
+            embedding_space=_space(),
+            created_at="2026-01-01T00:00:00Z",
+        ).to_dict(),
+    )
+
+    dataset = EmbeddingArtifactDataset(merged)
+    assert dataset.num_rows == 5
+    assert dataset.num_videos == 2
+    assert dataset.embedding_space == _space()
+    assert dataset.artifact_id == "merged"
+    assert dataset.embedding_dtype == "float32"
+
+
+def test_build_index_works_from_shard_artifact(tmp_path: Path) -> None:
+    """build_index consumes a shard-format artifact via the adapter."""
+    shard = tmp_path / "worker_000"
+    shard.mkdir()
+    _write_frames_and_matrix(shard, _space())
+    _write_json(
+        shard / "manifest.json",
+        ShardManifest(
+            schema_version="1.0",
+            worker_id=0,
+            model="test-model",
+            embedding_dim=_DIM,
+            dtype="float32",
+            device="cpu",
+            num_embeddings=5,
+            num_videos=len(_ARTIFACT_VIDEOS),
+            source_frames="/tmp/frames.ndjson",
+            embedding_space=_space(),
+            created_at="2026-01-01T00:00:00Z",
+        ).to_dict(),
+    )
+    dataset = EmbeddingArtifactDataset(shard)
+    index_dir = tmp_path / "index"
+
+    manifest = build_index(
+        dataset, index_dir, artifact_id="idx-from-shard", embedding_space=dataset.embedding_space
+    )
+
+    stored = read_index_manifest(index_dir / "manifest.json")
+    assert stored.num_rows == 5
+    assert stored.num_videos == 2
+    assert stored.source_dataset_id == str(shard)
+    assert stored.embedding_space == _space()
+    np.testing.assert_array_equal(
+        np.load(index_dir / "embeddings.npy"), np.load(shard / EMBEDDINGS_FILENAME)
+    )
+    assert list(iter_index_frames(index_dir / "frames.ndjson")) == list(
+        iter_frames(shard / FRAMES_FILENAME)
+    )
