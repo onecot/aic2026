@@ -28,6 +28,8 @@ Usage:
     modal run modal_ocr_distributed.py --shard-size 20000
     modal run modal_ocr_distributed.py --gpu A10G --num-workers 4
     modal run modal_ocr_distributed.py --validate           # small smoke run
+    modal run modal_ocr_distributed.py --shard-index 7      # re-run one shard only
+    modal run modal_ocr_distributed.py --timeout-s 900      # cap worker runtime
 """
 
 from __future__ import annotations
@@ -361,6 +363,7 @@ class ShardHeartbeatReporter(ProgressReporter):
 @app.function(
     image=image,
     gpu=DEFAULT_GPU,
+    memory=8192,
     timeout=OCR_TIMEOUT,
     volumes={VOLUME_MOUNT_PATH: volume},
 )
@@ -451,6 +454,33 @@ def _local_canonical_frames() -> Path:
     return REPO_ROOT / "data" / "keyframes" / "adaptive_sbd_v1" / FRAMES_FILENAME
 
 
+def select_shard_ids(num_shards: int, shard_index: int | None) -> list[int]:
+    """Return the shard ids to dispatch for one launcher run.
+
+    Expected input:
+        - num_shards: total number of shards (>= 1); must match the value
+          used by the original distributed run so shard bounds are stable.
+        - shard_index: ``None`` to run every shard, or one index in
+          ``[0, num_shards)`` to re-run only that shard (e.g. to finalize a
+          shard that already completed its checkpoint).
+
+    Returns:
+        - Ordered list of shard ids to execute.
+
+    Raises:
+        - ValueError: if ``num_shards`` or ``shard_index`` is invalid.
+    """
+    if not isinstance(num_shards, int) or isinstance(num_shards, bool) or num_shards < 1:
+        raise ValueError(f"num_shards must be a positive integer, got {num_shards!r}")
+    if shard_index is None:
+        return list(range(num_shards))
+    if not isinstance(shard_index, int) or isinstance(shard_index, bool):
+        raise ValueError(f"shard_index must be an integer or None, got {shard_index!r}")
+    if not (0 <= shard_index < num_shards):
+        raise ValueError(f"shard_index must be in [0, {num_shards}), got {shard_index!r}")
+    return [shard_index]
+
+
 def _count_local_frames(path: Path) -> int:
     """Count non-empty lines in a local frames file."""
     if not path.is_file():
@@ -468,6 +498,8 @@ def main(
     shard_size: int | None = None,
     gpu: str = DEFAULT_GPU,
     validate: bool = False,
+    shard_index: int | None = None,
+    timeout_s: int | None = None,
 ) -> None:
     """Launch the distributed OCR job.
 
@@ -476,6 +508,11 @@ def main(
     canonical frames file locally to count rows). ``--gpu`` selects the worker
     GPU (default ``L4``). ``--validate`` runs a tiny shard into
     ``shards-validate`` so the real shard artifacts are never polluted.
+
+    ``--shard-index I`` dispatches only shard ``I`` of the computed shard
+    count (resumable/finalize reruns; keep ``num-workers`` identical to the
+    original run). ``--timeout-s T`` caps each worker's runtime at ``T``
+    seconds, overriding the 12-hour function default to bound GPU cost.
     """
     if validate:
         run_ocr_shard.remote(
@@ -488,6 +525,10 @@ def main(
 
     if not isinstance(gpu, str) or gpu == "":
         raise ValueError(f"gpu must be a non-empty string, got {gpu!r}")
+    if timeout_s is not None and (
+        not isinstance(timeout_s, int) or isinstance(timeout_s, bool) or timeout_s < 1
+    ):
+        raise ValueError(f"timeout_s must be a positive integer or None, got {timeout_s!r}")
 
     if shard_size is not None:
         if not isinstance(shard_size, int) or isinstance(shard_size, bool) or shard_size < 1:
@@ -505,7 +546,14 @@ def main(
             raise ValueError(f"num_workers must be a positive integer, got {num_workers!r}")
         num_shards = num_workers
 
+    shard_ids = select_shard_ids(num_shards, shard_index)
     fn = run_ocr_shard.with_options(gpu=gpu)
-    print(f"dispatching {num_shards} shards on gpu={gpu}", flush=True)
-    list(fn.map(range(num_shards), kwargs={"num_shards": num_shards}))
-    print(f"all {num_shards} shards completed", flush=True)
+    if timeout_s is not None:
+        fn = fn.with_options(timeout=timeout_s)
+    suffix = f" timeout={timeout_s}s" if timeout_s is not None else ""
+    print(
+        f"dispatching shards {shard_ids} of {num_shards} on gpu={gpu}{suffix}",
+        flush=True,
+    )
+    list(fn.map(shard_ids, kwargs={"num_shards": num_shards}))
+    print(f"shards {shard_ids} completed", flush=True)

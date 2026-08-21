@@ -37,8 +37,7 @@ tests/test_keyframe_materialize_verify.py -> (deleted)
 
 ## Removed
 
-- `modal_ocr.py`: the single-GPU runner duplicated the distributed runner's
-  one-shard mode. Use `modal_ocr_distributed.py --num-workers 1`.
+- `modal_ocr.py`: the single-GPU runner duplicated the distributed runner's  one-shard mode. Use `modal_ocr_distributed.py --num-workers 1`.
 - `tests/test_modal_ocr.py`: tests coupled to that deleted duplicate runner.
 - `src/aic2026/keyframe_materialize_verify.py`: duplicated materialization
   verification implementation and report model.

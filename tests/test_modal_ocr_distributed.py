@@ -180,3 +180,22 @@ def test_heartbeat_reporter_includes_resume_offset():
     lines = stream.getvalue().splitlines()
     assert lines[0].startswith("[shard_003]")
     assert "processed=25/current=5025/total=18540" in lines[0]
+
+def test_select_shard_ids_runs_all_by_default():
+    assert mod.select_shard_ids(8, None) == list(range(8))
+
+
+def test_select_shard_ids_single_shard():
+    assert mod.select_shard_ids(8, 7) == [7]
+    assert mod.select_shard_ids(8, 0) == [0]
+
+
+def test_select_shard_ids_validates_inputs():
+    with pytest.raises(ValueError, match="num_shards"):
+        mod.select_shard_ids(0, None)
+    with pytest.raises(ValueError, match="shard_index"):
+        mod.select_shard_ids(8, 8)
+    with pytest.raises(ValueError, match="shard_index"):
+        mod.select_shard_ids(8, -1)
+    with pytest.raises(ValueError, match="shard_index"):
+        mod.select_shard_ids(8, "7")

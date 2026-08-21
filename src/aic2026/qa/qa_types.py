@@ -116,6 +116,8 @@ class QaQueryResult:
     predictions: tuple[QaPrediction, ...]
     video_candidates: tuple[VideoCandidate, ...]
     window_candidates: tuple[WindowCandidate, ...]
+    answer_evidence: tuple[QaPrediction, ...] | None = None
+    answer_error: str | None = None
 
     def __post_init__(self) -> None:
         for name, value in (("query_id", self.query_id), ("query_text", self.query_text)):
@@ -123,6 +125,14 @@ class QaQueryResult:
                 raise ValueError(f"{name} must be a non-empty string")
         if not isinstance(self.answer, str):
             raise ValueError("answer must be a string (may be empty in the retrieval foundation)")
+        if self.answer_evidence is not None and not all(
+            isinstance(item, QaPrediction) for item in self.answer_evidence
+        ):
+            raise ValueError("answer_evidence must contain only typed QaPrediction records")
+        if self.answer_error is not None and (
+            not isinstance(self.answer_error, str) or self.answer_error == ""
+        ):
+            raise ValueError("answer_error must be a non-empty string or None")
         for label, candidates in (
             ("predictions", self.predictions),
             ("video_candidates", self.video_candidates),
@@ -145,11 +155,18 @@ class QaQueryResult:
             "predictions": [prediction.to_dict() for prediction in self.predictions],
             "video_candidates": [_video_candidate_to_dict(item) for item in self.video_candidates],
             "window_candidates": [_window_candidate_to_dict(item) for item in self.window_candidates],
+            "answer_evidence": (
+                [prediction.to_dict() for prediction in self.answer_evidence]
+                if self.answer_evidence is not None
+                else None
+            ),
+            "answer_error": self.answer_error,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> QaQueryResult:
         """Deserialize one query result."""
+        evidence = data.get("answer_evidence")
         return cls(
             query_id=str(data["query_id"]),
             query_text=str(data["query_text"]),
@@ -157,6 +174,8 @@ class QaQueryResult:
             predictions=tuple(QaPrediction.from_dict(item) for item in data["predictions"]),
             video_candidates=tuple(_video_candidate_from_dict(item) for item in data["video_candidates"]),
             window_candidates=tuple(_window_candidate_from_dict(item) for item in data["window_candidates"]),
+            answer_evidence=tuple(QaPrediction.from_dict(item) for item in evidence) if evidence is not None else None,
+            answer_error=data.get("answer_error"),
         )
 
 
@@ -182,6 +201,10 @@ class QaPredictionManifest:
         - index_artifact_path / index_manifest / model_embedding_space /
           model_config: artifact provenance.
         - selected_query_ids: explicit subset, or ``None``.
+        - answer_generation: optional answer-generation section (model,
+          checkpoint, device, top_n, exact prompt, keyframes dir, evidence /
+          failed query counts) recorded when answers were generated; ``None``
+          for retrieval-only runs.
 
     Returns:
         - A validated QA prediction manifest.
@@ -208,6 +231,7 @@ class QaPredictionManifest:
     model_embedding_space: dict[str, Any]
     model_config: dict[str, Any] | None
     selected_query_ids: tuple[str, ...] | None
+    answer_generation: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != QA_PREDICTION_SCHEMA_VERSION:
@@ -257,6 +281,8 @@ class QaPredictionManifest:
             raise ValueError("embedding_space_override_used cannot be true when spaces are compatible")
         if not isinstance(self.index_manifest, dict) or not isinstance(self.model_embedding_space, dict):
             raise ValueError("index_manifest and model_embedding_space must be dictionaries")
+        if self.answer_generation is not None and not isinstance(self.answer_generation, dict):
+            raise ValueError("answer_generation must be a dictionary or None")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the manifest to a JSON-safe dictionary."""
@@ -279,6 +305,7 @@ class QaPredictionManifest:
             "model_embedding_space": self.model_embedding_space,
             "model_config": self.model_config,
             "selected_query_ids": list(self.selected_query_ids) if self.selected_query_ids is not None else None,
+            "answer_generation": self.answer_generation,
         }
 
     @classmethod
@@ -304,6 +331,7 @@ class QaPredictionManifest:
             model_embedding_space=dict(data["model_embedding_space"]),
             model_config=dict(data["model_config"]) if data.get("model_config") is not None else None,
             selected_query_ids=tuple(selected) if selected is not None else None,
+            answer_generation=dict(data["answer_generation"]) if data.get("answer_generation") is not None else None,
         )
 
 

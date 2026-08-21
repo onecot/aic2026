@@ -18,6 +18,10 @@ data:
   # Root directory for derived artifacts (e.g. indexes), relative to the
   # repo root. Each index artifact lives in its own subdirectory.
   indexes_dir: data/interim/indexes
+  # Root directory of the materialized keyframe artifact (frames.ndjson +
+  # images/), relative to the repo root. QA answer generation resolves
+  # retrieved evidence frames to images in this collection.
+  keyframes_dir: data/keyframes/adaptive_sbd_v1
 
 models:
   openclip:

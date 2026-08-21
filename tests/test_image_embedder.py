@@ -372,6 +372,7 @@ def _make_config(*, with_jina: bool) -> Any:
     return Config(
         data_raw_dir=Path("data/raw/aic2026_batch1"),
         data_indexes_dir=Path("data/interim/indexes"),
+        data_keyframes_dir=Path("data/keyframes/adaptive_sbd_v1"),
         openclip=openclip,
         jina=jina,
     )

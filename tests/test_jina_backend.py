@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+import sys
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -218,10 +220,15 @@ def test_required_runtime_packages_declared_in_pyproject() -> None:
         )
 
 
-def test_transformers_version_is_upper_bounded_in_pyproject() -> None:
-    """The jina extra must cap transformers below 5.x: the remote modeling code
-    imports ``clip_loss`` from ``transformers.models.clip.modeling_clip``, which
-    was removed after transformers 5.5.0."""
+def test_jina_extra_allows_current_transformers_stack() -> None:
+    """The jina extra must not force a pre-5.x Transformers downgrade.
+
+    The backend ships a compatibility shim for ``clip_loss`` (removed in
+    Transformers 5.6 and replaced by the identical
+    ``image_text_contrastive_loss``), so the extra may install a recent
+    Transformers. A modern ``tokenizers`` is required to parse the
+    ``jinaai/jina-clip-v2`` tokenizer (Metaspace + precompiled normalizer).
+    """
     repo_root = Path(__file__).resolve().parents[1]
     pyproject = repo_root / "pyproject.toml"
     assert pyproject.is_file(), f"pyproject.toml not found at {pyproject}"
@@ -233,11 +240,59 @@ def test_transformers_version_is_upper_bounded_in_pyproject() -> None:
     )
     assert transformers_specs, "transformers missing from the jina extra in pyproject.toml"
     for spec in transformers_specs:
-        bounds = [part for part in spec.split(",") if part.startswith("<")]
-        assert any(bound.lstrip("<").startswith("5") for bound in bounds), (
-            f"jina extra must cap transformers below 5.x (clip_loss was removed in "
-            f"v5.6.0); got {spec}"
-        )
+        upper_bounds = [part for part in spec.split(",") if part.startswith("<")]
+        for bound in upper_bounds:
+            assert not bound.lstrip("<").startswith("5"), (
+                f"jina extra must not cap transformers below 5.x; got {spec}"
+            )
+    tokenizers_specs = sorted(
+        line for line in declared if line.startswith("tokenizers") or line.startswith("tokenizers ")
+    )
+    assert tokenizers_specs, "tokenizers missing from the jina extra in pyproject.toml"
+    assert any(">=" in part for part in tokenizers_specs[0].split(",")), (
+        "jina extra should pin a minimum tokenizers version to parse the Jina tokenizer"
+    )
+
+
+def _fake_clip_modeling(**attributes: Any) -> ModuleType:
+    """Build a stand-in for ``transformers.models.clip.modeling_clip``."""
+    module = ModuleType("transformers.models.clip.modeling_clip")
+    for name, value in attributes.items():
+        setattr(module, name, value)
+    return module
+
+
+def _install_fake_clip_modeling(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> None:
+    """Route the shim's import to a fake module for a network-free test."""
+    monkeypatch.setitem(sys.modules, "transformers.models.clip.modeling_clip", module)
+
+
+def test_clip_loss_shim_is_noop_when_legacy_symbol_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Transformers that still ship ``clip_loss``, the shim leaves it as-is."""
+    original = lambda similarity: similarity  # noqa: E731
+    module = _fake_clip_modeling(clip_loss=original)
+    _install_fake_clip_modeling(monkeypatch, module)
+    jina._ensure_clip_loss_compat()
+    assert module.clip_loss is original
+
+
+def test_clip_loss_shim_aliases_current_loss_function(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On modern Transformers, the shim aliases ``image_text_contrastive_loss``."""
+    def current_loss(similarity: Any) -> Any:
+        return similarity
+
+    module = _fake_clip_modeling(image_text_contrastive_loss=current_loss)
+    _install_fake_clip_modeling(monkeypatch, module)
+    jina._ensure_clip_loss_compat()
+    assert module.clip_loss is current_loss
+
+
+def test_clip_loss_shim_fails_without_any_loss_function(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unexpected Transformers without either symbol fails with a clear error."""
+    module = _fake_clip_modeling()
+    _install_fake_clip_modeling(monkeypatch, module)
+    with pytest.raises(JinaClipRuntimeError, match="neither 'clip_loss'"):
+        jina._ensure_clip_loss_compat()
 
 
 def test_backend_initialization_and_embedding_space(monkeypatch: pytest.MonkeyPatch) -> None:

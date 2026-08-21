@@ -11,7 +11,8 @@ Commands:
     media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
     objects-analyze - analyze BTC object detections for KIS retrieval usefulness.
     object-rerank-kis - rerank a KIS prediction artifact with object detections.
-    predict-qa      - generate QA retrieval evidence from an index artifact.
+    predict-qa      - generate QA retrieval evidence (and optional VLM answers) from an index artifact.
+    predict-trake   - generate per-event TRAKE retrieval evidence from an index artifact.
     export-qa-submission - export a QA artifact to the provisional BTC CSV.
 
 CLI logic stays thin; the real work lives in reusable modules
@@ -64,6 +65,7 @@ from aic2026.temporal_window_expansion import (
     TemporalWindowConfig,
     write_expanded_prediction_artifact,
 )
+from aic2026.trake import TrakePredictionRunnerConfig, run_trake_prediction
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +302,97 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     predict_qa_parser.add_argument(
+        "--generate-answer",
+        action="store_true",
+        default=False,
+        help="Enable Jina VLM answer generation over the retrieved evidence frames.",
+    )
+    predict_qa_parser.add_argument(
+        "--answer-top-n",
+        type=int,
+        default=5,
+        help="Number of diverse evidence frames passed to the Jina VLM per query (default: 5).",
+    )
+    predict_qa_parser.add_argument(
+        "--answer-device",
+        choices=("auto", "mps"),
+        default="mps",
+        help="Device for the Jina VLM answer generator (auto or mps).",
+    )
+    predict_qa_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    predict_trake_parser = subparsers.add_parser(
+        "predict-trake",
+        help="Run per-event TRAKE retrieval evidence generation and write a TRAKE artifact directory.",
+    )
+    predict_trake_parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a YAML config file (defaults to configs/default.yaml).",
+    )
+    predict_trake_parser.add_argument(
+        "--evaluation-set",
+        type=Path,
+        default=Path("data/eval/eval_set.csv"),
+        help="Path to evaluation CSV (default: data/eval/eval_set.csv).",
+    )
+    predict_trake_parser.add_argument(
+        "--index-artifact",
+        type=Path,
+        required=True,
+        help="Path to the index artifact directory.",
+    )
+    predict_trake_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path for the output TRAKE artifact directory (manifest.json + predictions.jsonl).",
+    )
+    predict_trake_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=100,
+        help="Number of ranked frame retrieval candidates per event.",
+    )
+    predict_trake_parser.add_argument(
+        "--query-text-field",
+        choices=("query_text_vi", "query_text_en"),
+        default="query_text_vi",
+        help="Query text field to encode.",
+    )
+    predict_trake_parser.add_argument(
+        "--window-max-gap",
+        type=int,
+        default=60,
+        help="Temporal window grouping gap (positive integer; default: 60).",
+    )
+    predict_trake_parser.add_argument(
+        "--query-id",
+        dest="query_ids",
+        action="append",
+        default=None,
+        help="Optional query id filter; repeat to select an explicit subset.",
+    )
+    predict_trake_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional stable run id recorded in the output artifact.",
+    )
+    predict_trake_parser.add_argument(
+        "--allow-embedding-space-mismatch",
+        action="store_true",
+        help=(
+            "Explicitly allow query/index embedding-space mismatch for diagnostic experiments. "
+            "Disabled by default."
+        ),
+    )
+    predict_trake_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -1052,6 +1145,10 @@ def main(argv: list[str] | None = None) -> int:
                     query_subset_ids=tuple(args.query_ids) if args.query_ids else None,
                     allow_embedding_space_mismatch=args.allow_embedding_space_mismatch,
                     run_id=args.run_id,
+                    generate_answer=args.generate_answer,
+                    answer_top_n=args.answer_top_n,
+                    answer_device=args.answer_device,
+                    keyframes_dir=config.data_keyframes_dir if args.generate_answer else None,
                 ),
                 encoder,
             )
@@ -1059,6 +1156,41 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print(f"QA artifact: {args.output}")
+        print(f"Processed queries: {artifact.manifest.processed_query_count}/{artifact.manifest.evaluation_set_query_count}")
+        print(f"Index artifact id: {artifact.manifest.index_manifest['artifact_id']}")
+        answer_generation = artifact.manifest.answer_generation
+        if answer_generation is not None:
+            print(
+                f"Answer generation: model={answer_generation['model']} "
+                f"device={answer_generation['device']} top_n={answer_generation['top_n']} "
+                f"evidence_queries={answer_generation['evidence_query_count']} "
+                f"failed={answer_generation['failed_query_count']}"
+            )
+        return 0
+
+    if args.command == "predict-trake":
+        config = load_config(args.config)
+        try:
+            encoder = create_text_encoder(config)
+            artifact = run_trake_prediction(
+                TrakePredictionRunnerConfig(
+                    evaluation_set_path=args.evaluation_set,
+                    index_artifact_dir=args.index_artifact,
+                    prediction_output_dir=args.output,
+                    model_config=config.model_config,
+                    top_k=args.top_k,
+                    query_text_field=args.query_text_field,
+                    window_max_gap=args.window_max_gap,
+                    query_subset_ids=tuple(args.query_ids) if args.query_ids else None,
+                    allow_embedding_space_mismatch=args.allow_embedding_space_mismatch,
+                    run_id=args.run_id,
+                ),
+                encoder,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"TRAKE artifact: {args.output}")
         print(f"Processed queries: {artifact.manifest.processed_query_count}/{artifact.manifest.evaluation_set_query_count}")
         print(f"Index artifact id: {artifact.manifest.index_manifest['artifact_id']}")
         return 0

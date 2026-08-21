@@ -24,6 +24,7 @@ from aic2026.evaluation import EvaluationQuery, EvaluationTask, load_eval_set
 from aic2026.index_artifact import IndexManifest
 from aic2026.kis_scoring import KisPrediction
 from aic2026.retrieval import IndexRetriever, RetrievalCandidate
+from aic2026.text_query import TextQuery
 
 KIS_PREDICTION_SCHEMA_VERSION = "1.0"
 QueryTextField = Literal["query_text_vi", "query_text_en"]
@@ -279,52 +280,132 @@ def run_kis_prediction(
     if not all_kis_queries:
         raise ValueError("evaluation set contains no KIS queries")
 
-    queries = _select_queries(all_kis_queries, config.query_subset_ids)
-    retriever = IndexRetriever(config.index_artifact_dir)
-    spaces_compatible = encoder.embedding_space == retriever.manifest.embedding_space
+    selected = _select_queries(all_kis_queries, config.query_subset_ids)
+    queries = tuple(
+        TextQuery(
+            query_id=query.query_id,
+            query_text=_resolve_query_text(
+                query.query_text_vi, query.query_text_en, config.query_text_field
+            ),
+        )
+        for query in selected
+    )
+    return run_kis_prediction_for_queries(
+        queries,
+        encoder=encoder,
+        index_artifact_dir=config.index_artifact_dir,
+        prediction_output_path=config.prediction_output_path,
+        top_k=config.top_k,
+        query_text_field=config.query_text_field,
+        model_config=config.model_config,
+        allow_embedding_space_mismatch=config.allow_embedding_space_mismatch,
+        run_id=config.run_id,
+        query_source_path=Path(config.evaluation_set_path),
+        query_source_count=len(all_kis_queries),
+        selected_query_ids=config.query_subset_ids,
+    )
+
+
+def run_kis_prediction_for_queries(
+    queries: tuple[TextQuery, ...],
+    *,
+    encoder: EmbeddingEncoder,
+    index_artifact_dir: Path,
+    prediction_output_path: Path,
+    top_k: int = 100,
+    query_text_field: QueryTextField = "query_text_vi",
+    model_config: dict[str, Any] | None = None,
+    allow_embedding_space_mismatch: bool = False,
+    run_id: str | None = None,
+    query_source_path: Path,
+    query_source_count: int,
+    selected_query_ids: tuple[str, ...] | None = None,
+) -> KisPredictionArtifact:
+    """Run KIS prediction for source-resolved text queries.
+
+    This is the source-independent KIS prediction core: it consumes queries
+    whose text is already resolved (no evaluation CSV is read) and reuses the
+    existing retrieval stack unchanged.
+
+    Expected input:
+        - queries: at least one resolved text query, in processing order.
+        - encoder: text encoder implementing the embedding contract.
+        - index_artifact_dir: path to one index artifact directory.
+        - prediction_output_path: output JSON artifact path.
+        - top_k: positive candidate count per query.
+        - query_text_field: provenance label recorded in the artifact
+          manifest (``query_text_vi`` or ``query_text_en``).
+        - model_config: optional JSON-serializable model configuration.
+        - allow_embedding_space_mismatch: explicit opt-in override for
+          diagnostic experiments only.
+        - run_id: optional stable run id; auto-generated when omitted.
+        - query_source_path: identity of the query source (eval-set CSV path
+          or BTC query directory), recorded as artifact provenance.
+        - query_source_count: total queries available at the source for this
+          task (>= number processed).
+        - selected_query_ids: optional explicit subset recorded in the
+          artifact for provenance.
+
+    Returns:
+        - Prediction artifact written to ``prediction_output_path`` and
+          returned as a typed value.
+
+    Raises:
+        - ValueError: if there are no queries, the source count is invalid,
+          or embedding spaces mismatch under strict mode.
+        - FileNotFoundError: if the index artifact is absent.
+    """
+    if not queries:
+        raise ValueError("queries must contain at least one KIS query")
+    if not isinstance(query_source_count, int) or isinstance(query_source_count, bool) or query_source_count < 1:
+        raise ValueError("query_source_count must be a positive integer")
+    if len(queries) > query_source_count:
+        raise ValueError("query_source_count must be >= the number of queries")
+
+    retriever = IndexRetriever(index_artifact_dir)
+    spaces_compatible = encoder.embedding_space.is_compatible_with(retriever.manifest.embedding_space)
     override_used = False
     if not spaces_compatible:
-        if not config.allow_embedding_space_mismatch:
+        if not allow_embedding_space_mismatch:
             _require_compatible_spaces(encoder.embedding_space, retriever.manifest)
         override_used = True
 
     results: list[QueryPredictionResult] = []
     for query in queries:
-        query_text = _resolve_query_text(query.query_text_vi, query.query_text_en, config.query_text_field)
-        query_embedding = encoder.encode_text(query_text)
+        query_embedding = encoder.encode_text(query.query_text)
         retrieval = _search_candidates(
             retriever=retriever,
             query_embedding=query_embedding,
-            top_k=config.top_k,
-            allow_mismatch=config.allow_embedding_space_mismatch,
+            top_k=top_k,
+            allow_mismatch=allow_embedding_space_mismatch,
         )
         results.append(
             QueryPredictionResult(
                 query_id=query.query_id,
-                query_text=query_text,
+                query_text=query.query_text,
                 predictions=tuple(_to_ranked_prediction(candidate) for candidate in retrieval),
             )
         )
 
     artifact = KisPredictionArtifact(
         schema_version=KIS_PREDICTION_SCHEMA_VERSION,
-        run_id=config.run_id or _default_run_id(),
+        run_id=run_id or _default_run_id(),
         created_at=_utc_now_iso(),
-        evaluation_set_path=str(Path(config.evaluation_set_path).resolve()),
-        evaluation_set_query_count=len(all_kis_queries),
+        evaluation_set_path=str(Path(query_source_path).resolve()),
+        evaluation_set_query_count=query_source_count,
         processed_query_count=len(results),
-        query_text_field=config.query_text_field,
-        top_k=config.top_k,
+        query_text_field=query_text_field,
+        top_k=top_k,
         embedding_space_compatible=spaces_compatible,
         embedding_space_override_used=override_used,
-        index_artifact_path=str(Path(config.index_artifact_dir).resolve()),
+        index_artifact_path=str(Path(index_artifact_dir).resolve()),
         index_manifest=retriever.manifest.to_dict(),
         model_embedding_space=encoder.embedding_space.to_dict(),
-        model_config=config.model_config,
-        selected_query_ids=config.query_subset_ids,
+        model_config=model_config,
+        selected_query_ids=selected_query_ids,
         query_results=tuple(results),
     )
-    write_kis_prediction_artifact(config.prediction_output_path, artifact)
+    write_kis_prediction_artifact(prediction_output_path, artifact)
     return artifact
 
 
@@ -393,11 +474,16 @@ def _resolve_query_text(query_text_vi: str, query_text_en: str | None, field: Qu
 
 
 def _require_compatible_spaces(model_space: EmbeddingSpace, manifest: IndexManifest) -> None:
-    """Require model/index embedding spaces to match exactly."""
+    """Require model/index embedding spaces to be compatible.
+
+    Uses :meth:`EmbeddingSpace.is_compatible_with`, matching the QA and
+    TRAKE runners: build-environment-only ``model_version`` differences are
+    ignored, while every comparison-relevant field must match.
+    """
     index_space = manifest.embedding_space
     if index_space is None:
         raise ValueError("index artifact is missing embedding-space metadata")
-    if model_space != index_space:
+    if not model_space.is_compatible_with(index_space):
         raise ValueError(
             "incompatible embedding spaces between encoder and index: "
             f"model {model_space.space_id!r} ({model_space.backend}/{model_space.model_id}) != "
@@ -441,7 +527,7 @@ def _search_candidates(
         validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
         return retriever.search(query_embedding, top_k=top_k)
 
-    if query_embedding.space == retriever.manifest.embedding_space:
+    if query_embedding.space.is_compatible_with(retriever.manifest.embedding_space):
         return retriever.search(query_embedding, top_k=top_k)
 
     index_space = retriever.manifest.embedding_space

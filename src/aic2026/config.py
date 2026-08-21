@@ -117,6 +117,10 @@ class Config:
           absolute path when possible).
         - data_indexes_dir: root directory for derived artifacts such as
           indexes (resolved to an absolute path when possible).
+        - data_keyframes_dir: root directory of the materialized keyframe
+          artifact (``frames.ndjson`` + ``images/``) used by QA answer
+          generation to resolve evidence frames (resolved to an absolute
+          path when possible).
         - openclip: validated configuration for the OpenCLIP backend.
         - jina: optional validated configuration for the Jina CLIP backend.
           When present, it is the active model section for prediction runs;
@@ -125,6 +129,7 @@ class Config:
 
     data_raw_dir: Path
     data_indexes_dir: Path
+    data_keyframes_dir: Path
     openclip: OpenClipConfig
     jina: JinaClipConfig | None = None
 
@@ -215,6 +220,7 @@ def load_config(path: Path | str | None = None) -> Config:
     return Config(
         data_raw_dir=_resolve(payload["data"]["raw_dir"]),
         data_indexes_dir=_resolve(payload["data"]["indexes_dir"]),
+        data_keyframes_dir=_resolve(payload["data"].get("keyframes_dir", "data/keyframes/adaptive_sbd_v1")),
         openclip=OpenClipConfig(
             backend=openclip_payload["backend"],
             model_name=openclip_payload["model_name"],

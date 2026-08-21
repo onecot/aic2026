@@ -24,12 +24,14 @@ from aic2026.image_embedder import DEFAULT_PRETRAINED, resolve_device
 BACKEND = "jina-clip"
 
 #: Runtime packages the Jina CLIP remote modeling code (loaded through
-#: ``trust_remote_code=True``) imports unconditionally. Kept in sync with the
-#: ``jina`` optional-dependency group in ``pyproject.toml``.
+#: ``trust_remote_code=True``) imports unconditionally, plus the packages the
+#: resolved tokenizer needs at runtime. Kept in sync with the ``jina``
+#: optional-dependency group in ``pyproject.toml``.
 REQUIRED_RUNTIME_PACKAGES = (
     "torch",
     "torchvision",
     "transformers",
+    "sentencepiece",
     "PIL",
     "timm",
     "einops",
@@ -49,6 +51,40 @@ TOKENIZER_ID = "jina-clip-v2-tokenizer-v1"
 
 class JinaClipRuntimeError(RuntimeError):
     """Raised when the optional Jina CLIP runtime cannot be loaded or used."""
+
+
+def _ensure_clip_loss_compat() -> None:
+    """Expose ``clip_loss`` on Transformers so the remote Jina model can import it.
+
+    The Jina CLIP v2 modeling code shipped on HuggingFace Hub (loaded through
+    ``trust_remote_code``) imports ``clip_loss`` from
+    ``transformers.models.clip.modeling_clip`` at module load time, but only
+    calls it from the training path (``forward(..., return_loss=True)``).
+    Transformers 5.6 renamed that identical computation to
+    ``image_text_contrastive_loss``. Inference here only calls
+    ``get_text_features``/``get_image_features``, so aliasing the current
+    implementation onto the old symbol lets the remote module import on recent
+    Transformers while leaving older versions (which still ship ``clip_loss``)
+    untouched.
+
+    Returns:
+        - None.
+
+    Raises:
+        - JinaClipRuntimeError: if the installed Transformers exposes neither
+          ``clip_loss`` nor ``image_text_contrastive_loss``.
+    """
+    clip_modeling = import_module("transformers.models.clip.modeling_clip")
+    if hasattr(clip_modeling, "clip_loss"):
+        return
+    loss_fn = getattr(clip_modeling, "image_text_contrastive_loss", None)
+    if loss_fn is None:
+        raise JinaClipRuntimeError(
+            "transformers.models.clip.modeling_clip exposes neither 'clip_loss' "
+            "nor 'image_text_contrastive_loss'; Jina CLIP cannot import its "
+            "remote modeling code"
+        )
+    clip_modeling.clip_loss = loss_fn
 
 
 def _load_dependencies() -> tuple[Any, Any]:
@@ -77,6 +113,7 @@ def _load_dependencies() -> tuple[Any, Any]:
             f"missing packages: {', '.join(missing)}. "
             "Install with pip install -e '.[jina]'"
         )
+    _ensure_clip_loss_compat()
     return import_module("torch"), import_module("transformers")
 
 
