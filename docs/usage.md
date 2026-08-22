@@ -51,15 +51,11 @@ Artifact purposes:
   `predict-kis`, directly consumable by `evaluate_kis`.
 
 CLI commands exist (`aic2026 inspect`, `aic2026 predict-kis`,
-`aic2026 temporal-expand-kis`, `aic2026 media-info-search`,
-`aic2026 media-info-evaluate`, `aic2026 media-info-report`,
-`aic2026 objects-analyze`, `aic2026 object-rerank-kis`,
 `aic2026 predict-qa`, `aic2026 export-qa-submission`). The embedding and
-index stages are Python-API only and are composed in scripts. Analysis-only
-CLIs live under `scripts/` (e.g. `scripts/analyze_kis_errors.py`,
-`scripts/analyze_keyframes.py`, `scripts/embed_shard.py`,
-`scripts/split_embedding_shards.py`, `scripts/merge_embedding_shards.py`,
-`scripts/create_experiment_manifest.py`; Sections 15-18).
+index stages are Python-API only and are composed in scripts. Asset-chain
+CLIs live under `scripts/` (e.g. `scripts/embed_shard.py`,
+`scripts/split_embedding_shards.py`, `scripts/merge_embedding_shards.py`;
+Sections 10-13).
 
 ## 2. Dataset stage
 
@@ -466,9 +462,7 @@ videos = build_video_candidates(results, method="max")   # VideoCandidate list
 ```
 
 The foundation never runs retrieval, encodes queries, or applies
-task-specific scoring; QA/TRAKE layers compose these primitives. It is also
-reused by the existing post-processing stages (`video_reranking`,
-`temporal_aggregation`, `temporal_reranking`).
+task-specific scoring; QA/TRAKE layers compose these primitives.
 
 ## 7. KIS evaluation stage
 
@@ -633,662 +627,7 @@ R@50 `0.326733`, R@100 `0.425743`).
    improvement must be measured against the same evaluation procedure and
    recorded with the run's config and artifact ids.
 
-## 10. Media-info retrieval branch (lexical)
-
-An independent retrieval *branch* over the per-video `media-info` text
-(`title`, `keywords`, `description`). It ranks videos by BM25 relevance for a
-text query and does not touch CLIP retrieval, the scorer, evaluation, or the
-prediction-artifact schema. Use it to study video-level text signals before
-any fusion with the CLIP index.
-
-Source: `aic2026.media_info_retrieval` (stdlib-only; reads the raw
-`media-info` files directly).
-
-### Python API
-
-```python
-from aic2026.media_info_retrieval import MediaInfoIndex
-
-# From the raw media-info directory:
-index = MediaInfoIndex.build_from_dir("data/raw/aic2026_batch1/media-info")
-print(index.num_documents)      # 873 (one document per video)
-
-# Or build from parsed documents:
-from aic2026.media_info_retrieval import MediaInfoDocument, MediaInfoRetrievalConfig
-index = MediaInfoIndex.build(
-    [MediaInfoDocument("L21_V001", "60 Giây Sáng tin tức", ("tin tức", "HTV"), "Bản tin thời sự")],
-    config=MediaInfoRetrievalConfig(title_weight=3.0, keywords_weight=2.0, description_weight=1.0),
-)
-
-# Query: ranked video ids with BM25 scores.
-hits = index.query("tin tức mới nhất hôm nay", top_k=10)
-for hit in hits:
-    print(hit.rank, hit.video_id, hit.score)   # MediaInfoHit(rank, video_id, score)
-```
-
-### CLI
-
-```bash
-aic2026 media-info-search \
-  --media-info-dir data/raw/aic2026_batch1/media-info \
-  --query "một chiếc thuyền chở nhiều du khách" \
-  --top-k 10 \
-  --output data/interim/media-info-search/hits.json
-```
-
-Expected stdout:
-
-```text
-Ranked hits written to: data/interim/media-info-search/hits.json
-Query: một chiếc thuyền chở nhiều du khách
-  rank=1 video_id=L21_V001 score=4.223456
-```
-
-`--query` is repeatable (multiple queries per run). Optional BM25 overrides:
-`--k1`, `--b`, `--title-weight`, `--keywords-weight`, `--description-weight`.
-Without `--output`, hits are printed to stdout only.
-
-### Determinism and schema
-
-- Documents are indexed in sorted video-id order; ties in BM25 score are
-  resolved by video id, so identical inputs always produce identical output.
-- `MediaInfoIndex.save(path)` writes a self-describing JSON artifact
-  (schema version, config, source documents); `MediaInfoIndex.load(path)`
-  reproduces the same rankings without re-reading the raw dataset.
-- Loading is strict by default (`build_from_dir(strict=True)` raises on any
-  unreadable/malformed file). Pass `strict=False` to skip problem files;
-  skipped files are recorded in `index.problems`.
-
-### Reproducing the experiment
-
-```python
-from aic2026.media_info_retrieval import MediaInfoIndex
-
-index = MediaInfoIndex.build_from_dir("data/raw/aic2026_batch1/media-info")
-index.save("data/interim/media-info-index.json")
-
-# Later / elsewhere: reload and re-query without the raw dataset.
-reloaded = MediaInfoIndex.load("data/interim/media-info-index.json")
-print(reloaded.query("thuyền chở du khách", top_k=5))
-```
-
-## 11. Media-info video-level evaluation
-
-Measures how often the media-info lexical branch retrieves the ground-truth
-*video* for each KIS query, and compares it against the CLIP baseline at the
-video level. This is a video-retrieval study only: it reports the rank of the
-GT video in the media-info result list and does not score temporal
-localization. Use it to decide whether a media-info prefilter is worth fusing
-with the CLIP index.
-
-Source: `aic2026.media_info_evaluation` (consumes a `MediaInfoIndex`, the
-evaluation set, and optionally a CLIP prediction artifact).
-
-### Python API
-
-```python
-from aic2026.evaluation import EvaluationTask, load_eval_set
-from aic2026.kis_prediction_runner import load_kis_predictions_for_scoring
-from aic2026.media_info_evaluation import (
-    evaluate_media_info_video_retrieval,
-    compare_to_clip_baseline,
-    format_report,
-)
-from aic2026.media_info_retrieval import MediaInfoIndex
-
-index = MediaInfoIndex.build_from_dir("data/raw/aic2026_batch1/media-info")
-eval_set = load_eval_set("data/eval/eval_set.csv")
-queries = tuple(eval_set.iter_queries(EvaluationTask.KIS))
-
-results, summary = evaluate_media_info_video_retrieval(
-    queries, index, query_text_field="query_text_en", top_k=100
-)
-print(summary.recall_at)       # ((1, ...), (5, ...), ..., (100, ...))
-print(summary.avg_gt_rank)
-print(summary.not_retrieved)   # query ids whose GT video was not retrieved
-
-# Compare against the CLIP baseline at the video level (optional).
-clip_predictions = load_kis_predictions_for_scoring(
-    "data/interim/predictions/kis-l14-laion2b-full-en.json"
-)
-comparison = compare_to_clip_baseline(
-    queries, {r.query_id: r for r in results}, clip_predictions, cutoff=100
-)
-print(comparison.media_info_only)   # media-info succeeds, CLIP fails
-print(comparison.clip_only)         # CLIP succeeds, media-info fails
-
-print(format_report(summary, results=results, comparison=comparison))
-```
-
-`evaluate_media_info_video_retrieval` returns a per-query list of
-`VideoRetrievalQueryResult(query_id, query_text, gt_video_id, gt_rank, hits)`
-and a `VideoRetrievalSummary(total, recall_at, avg_gt_rank, not_retrieved)`.
-`gt_rank` is `None` when the GT video is not in the media-info result list;
-`not_retrieved` collects those query ids. `recall_at` covers
-`DEFAULT_TOP_K_VALUES = (1, 5, 10, 20, 50, 100)`; pass `cutoffs=` to override,
-with `top_k >= max(cutoffs)`.
-
-A "succeeds" outcome in `compare_to_clip_baseline` means the GT video rank is
-`<= cutoff` (top-100 by default). Each record is grouped into exactly one of
-`media_info_only`, `clip_only`, `both`, `neither`.
-
-### CLI
-
-```bash
-aic2026 media-info-evaluate \
-  --media-info-dir data/raw/aic2026_batch1/media-info \
-  --evaluation-set data/eval/eval_set.csv \
-  --query-text-field query_text_en \
-  --top-k 100 \
-  --output data/interim/media-info-evaluate/en-metrics.json
-```
-
-Expected stdout (abridged):
-
-```text
-Media-info video-level retrieval evaluation
-================================================================================
-Queries: 101
-  Video Recall@1: 0.0198
-  Video Recall@5: 0.0594
-  Video Recall@100: 0.2079
-  average GT video rank: 51.86
-  queries where GT video not retrieved: 80
-Comparison vs CLIP baseline (cutoff top-100):
-  media-info succeeds, CLIP fails: 1
-  CLIP succeeds, media-info fails: 70
-  both succeed: 20
-  neither succeeds: 10
-Metrics written to: data/interim/media-info-evaluate/en-metrics.json
-```
-
-The JSON output contains `metrics` (aggregate summary), `results` (per-query
-details), and `comparison` (present only when a CLIP baseline was used).
-
-Key flags:
-
-- `--query-text-field` `query_text_en` (default) or `query_text_vi`; run both
-  to compare the two query languages.
-- `--top-k` number of videos retrieved per query (default 100; must be `>=`
-  the largest recall cutoff).
-- `--clip-predictions` path to the CLIP prediction artifact. When omitted, the
-  default `data/interim/predictions/kis-l14-laion2b-full-en.json` is used if it
-  exists and covers the evaluation set; otherwise the comparison is skipped.
-  Passing the flag explicitly makes a non-covering artifact an error.
-- BM25 overrides (`--k1`, `--b`, `--title-weight`, `--keywords-weight`,
-  `--description-weight`) apply to the built index.
-
-### Reproducing the experiment
-
-The command above reproduces the video-level media-info metrics and the
-CLIP-baseline comparison for the English queries. Both the `query_text_en` and
-`query_text_vi` runs use the same `MediaInfoIndex` (deterministic, built from
-the raw media-info directory) and the same evaluation set and CLIP baseline, so
-their outputs are directly comparable. Record the command, artifact paths, and
-index config with any results reported.
-
-## 12. Media-info query categorization report
-
-Categorizes every KIS query by whether media-info and the CLIP baseline
-retrieve the ground-truth *video* (rank `<= top-k`) at the video level:
-
-- **MEDIA_ONLY** — media-info retrieves the GT video, CLIP does not.
-- **CLIP_ONLY** — CLIP retrieves the GT video, media-info does not.
-- **BOTH** — both retrieve the GT video.
-- **NEITHER** — neither retrieves the GT video.
-
-This is a pure reporting step over the existing evaluation outputs; it performs
-no retrieval or fusion and does not modify any contract.
-
-Source: `aic2026.media_info_evaluation` (`category_report_to_dict`,
-`format_category_report`).
-
-### Python API
-
-```python
-from aic2026.media_info_evaluation import (
-    category_report_to_dict,
-    compare_to_clip_baseline,
-    format_category_report,
-)
-# comparison from compare_to_clip_baseline(...) (see Section 11)
-
-print(format_category_report(comparison))     # human-readable report
-payload = category_report_to_dict(comparison)  # JSON-safe dict
-print(payload["counts"])   # {'MEDIA_ONLY': ..., 'CLIP_ONLY': ..., ...}
-```
-
-The JSON payload contains `cutoff`, `counts` (per-category query counts),
-`total`, and `categories` — for each category a list of
-`{query_id, query_text_en, query_text_vi, gt_video_id, media_info_gt_rank,
-clip_gt_rank}` records.
-
-### CLI
-
-```bash
-aic2026 media-info-report \
-  --media-info-dir data/raw/aic2026_batch1/media-info \
-  --evaluation-set data/eval/eval_set.csv \
-  --clip-predictions data/interim/predictions/kis-l14-laion2b-full-en.json \
-  --output data/interim/media-info-report/categories.json
-```
-
-Expected stdout (abridged):
-
-```text
-Media-info vs CLIP baseline query categorization
-================================================================================
-Cutoff: top-100
-MEDIA_ONLY (1): media-info retrieves GT video, CLIP does not
-  kis_112 | EN: Find a news video about rising pork prices ... | VI: Tìm một
-  video bản tin về thịt heo tăng giá ... | GT: L22_V022 | media-info rank: 58
-  | CLIP rank: —
-CLIP_ONLY (70): CLIP retrieves GT video, media-info does not
-  ...
-Summary: MEDIA_ONLY=1, CLIP_ONLY=70, BOTH=20, NEITHER=10 | total=101
-Categorized report written to: data/interim/media-info-report/categories.json
-```
-
-Each line lists the query id, English and Vietnamese texts, GT video id,
-media-info rank (`—` when not retrieved), and CLIP first GT-video rank (`—`
-when not in the baseline). `--output` writes the JSON export; without it the
-report is printed to stdout only. A CLIP baseline is required (the default
-artifact is used when it exists and covers the evaluation set; otherwise the
-command fails with an explanatory message). `--query-text-field`, `--top-k`,
-and the BM25 overrides behave as in Section 11.
-
-### Reproducing the report
-
-Re-running the command above with the same media-info directory, evaluation
-set, CLIP baseline, and `--top-k` reproduces the same categorization because
-the media-info index and evaluation are deterministic. Record the command and
-artifact paths with any reported categorization.
-
-## 13. BTC object-detection analysis for KIS
-
-Analyzes whether the per-keyframe BTC object detections
-(`data/raw/aic2026_batch1/objects/<VIDEO_ID>/<NNN>.json`) can support KIS
-retrieval. This is a read-only analysis step: it never runs or modifies
-retrieval, the scorer, evaluation, or any prediction artifact, and it
-implements no fusion.
-
-Source: `aic2026.object_analysis` (`run_object_analysis`,
-`analyze_object_vocabulary`, `analyze_query_object_coverage`,
-`analyze_gt_frames`, `analyze_retrieval_potential`, `format_report`).
-
-The report has four sections:
-
-1. **Object vocabulary** — total frames/detections scanned, unique entities,
-   confidence percentiles, retention effects at configurable confidence
-   thresholds, and the top object classes.
-2. **Query-object coverage** — for each query, whether words in the query text
-   (English or Vietnamese) match entities detected in the query's
-   ground-truth frames. `MATCH` when at least one GT entity shares a token
-   with the query; otherwise `NO_MATCH`.
-3. **Ground-truth frame analysis** — the keyframe ordinals, object list,
-   and detection confidence statistics inside each query's annotated frame
-   range (mapped from original-video frame indices via `map-keyframes`).
-4. **Retrieval potential** — against the CLIP top-`k` predictions, the fraction
-   of GT-frame predictions whose frame overlaps a GT object entity
-   (`gt_overlap_rate`) minus the same fraction over false-positive frames
-   (`false_positive_overlap_rate`). Positive separation means objects can help
-   separate GT frames from false positives.
-
-### Python API
-
-```python
-from aic2026.object_analysis import format_report, run_object_analysis
-
-report = run_object_analysis(
-    objects_dir="data/raw/aic2026_batch1/objects",
-    map_dir="data/raw/aic2026_batch1/map-keyframes",
-    evaluation_set_path="data/eval/eval_set.csv",
-    clip_predictions_path="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
-    query_text_field="query_text_en",   # or "query_text_vi"
-    thresholds=(0.1, 0.3, 0.5, 0.7),    # confidence retention thresholds
-    top_classes=20,
-    min_confidence=0.3,                 # min score for GT / predicted object sets
-    prediction_top_k=1000,              # CLIP predictions analyzed per query
-    example_limit=5,
-)
-print(format_report(report))
-payload = report.to_dict()   # JSON-safe dict (use --output to persist it)
-print(payload["coverage"]["matched_count"])
-print(payload["retrieval_potential"]["summary"])
-```
-
-`run_object_analysis` requires the objects collection, the map-keyframes
-collection, the evaluation CSV, and a CLIP prediction artifact. It raises
-`FileNotFoundError` when a required input is absent and `ValueError` when the
-inputs are invalid (for example, no KIS queries). Frame indices in the
-prediction artifact and the evaluation CSV are original-video frame indices;
-they are mapped to keyframe ordinals through `map-keyframes` before object
-files are located.
-
-### CLI
-
-```bash
-aic2026 objects-analyze \
-  --objects-dir data/raw/aic2026_batch1/objects \
-  --map-dir data/raw/aic2026_batch1/map-keyframes \
-  --evaluation-set data/eval/eval_set.csv \
-  --clip-predictions data/interim/predictions/kis-l14-laion2b-full-en-top1000.json \
-  --output data/analysis/objects/kis-analyze-l14-laion2b-top1000.json
-```
-
-Available flags: `--objects-dir`, `--map-dir`, `--evaluation-set`,
-`--clip-predictions` (defaults to the top-1000 artifact when present),
-`--query-text-field`, `--confidence-thresholds` (comma-separated),
-`--min-confidence`, `--top-classes`, `--top-k`, `--max-videos`,
-`--examples`, and `--output` (JSON export). Without `--output` the report is
-printed to stdout only.
-
-Expected stdout (abridged):
-
-```text
-BTC object detection analysis for KIS retrieval
-================================================================================
-1. Object vocabulary
-  total object frames: 177321
-  total detections: 17732100
-  unique object entities: 584
-  ...
-2. Query-object coverage
-  queries with object coverage (MATCH): 18/101
-  queries without object coverage (NO_MATCH): 83/101
-  ...
-3. Ground-truth frame analysis
-  kis_100 (L21_V001):
-    keyframes in range: (238,)
-    objects (6): Boat:1, Clothing:1, Human face:1, Man:1, Person:1, Woman:1
-  ...
-4. Retrieval potential (CLIP top-k)
-  queries with GT-frame predictions: 78/101
-  queries where object overlap separates (positive separation): 76/78
-  average separation: 0.1785
-  mean GT-frame overlap rate: 0.9968
-  mean false-positive overlap rate: 0.7722
-```
-
-### Reference results (en, top-1000, min confidence 0.3)
-
-Recorded from the full evaluation set for later comparison:
-
-- Vocabulary: 177,321 frames, 17,732,100 detections, 584 unique entities;
-  confidence median ≈ 0.017; retention at `>= 0.3` is 1,122,384 detections
-  (514 entities, 6.33/frame).
-- Coverage: 18/101 queries MATCH, 83/101 NO_MATCH.
-- Retrieval potential: 78/101 queries have GT-frame predictions; object
-  overlap gives positive separation in 76/78 of those (mean separation 0.18,
-  mean GT-frame overlap 0.997, mean false-positive overlap 0.77).
-
-### Reproducing the analysis
-
-Re-running the command above with the same collection directories, evaluation
-set, CLIP baseline, and analysis parameters reproduces the same numbers; the
-scan order and aggregation are deterministic. Record the command, thresholds,
-and artifact paths with any reported analysis.
-
-### CLI command reference
-
-```text
-aic2026 inspect          - summarize the raw dataset (media-info, objects, keyframes).
-aic2026 build-index      - build the CLIP index artifact.
-aic2026 predict-kis      - produce KIS prediction artifacts from an index.
-aic2026 temporal-expand-kis - expand KIS predictions with temporal window decay.
-aic2026 media-info-search - rank videos by BM25 relevance over media-info text.
-aic2026 media-info-evaluate - measure video-level retrieval of media-info text.
-aic2026 media-info-report - categorize queries by media-info / CLIP GT-video retrieval.
-aic2026 objects-analyze  - analyze BTC object detections for KIS retrieval usefulness.
-aic2026 object-rerank-kis - rerank a KIS prediction artifact with object detections.
-scripts/analyze_kis_errors.py - categorize KIS retrieval failures (HIT / NEAR_VIDEO / FAIL).
-scripts/analyze_keyframes.py - analyze BTC keyframe extraction quality for KIS (Section 15).
-scripts/deduplicate_keyframes.py - deduplicate keyframes before split/embed (Section 17).
-scripts/embed_shard.py      - resumable, hardware-aware shard embedding (Section 16).
-scripts/split_embedding_shards.py - deterministic balanced split into worker inputs (Section 18).
-scripts/merge_embedding_shards.py - validate + merge completed shards (Section 18).
-scripts/verify_embedding.py - verify a completed embedding artifact (Section 20 Step 4).
-scripts/split_keyframe_extraction_shards.py - split a video manifest into worker inputs (Section 20).
-scripts/verify_video_split.py - verify a video split before distributing workers (Section 20).
-scripts/extract_keyframes.py - resumable keyframe extraction: DAKE-inspired fixed-budget or OmniShotCut adaptive (Section 20).
-scripts/verify_keyframe_extraction.py - verify a completed extraction artifact before upload (Section 20).
-scripts/merge_keyframe_shards.py - validate + merge extraction shards (Section 20).
-scripts/materialize_keyframes.py - decode selected frames into adaptive_sbd_v1 keyframe images (Section 20).
-scripts/verify_keyframe_materialization.py - verify a completed materialized keyframe artifact (Section 20).
-scripts/build_video_manifest.py - build the canonical videos.json inventory (Section 19).
-scripts/create_experiment_manifest.py - record experiment metadata (Section 21).
-```
-
-## 14. Object-based reranking of KIS predictions
-
-Re-ranks an existing ``predict-kis`` prediction artifact using BTC OWL-ViT
-object detections, testing whether objects can improve CLIP retrieval ranking.
-For each prediction the combined score is
-
-```text
-final_score = clip_score + lambda_weight * object_score
-```
-
-where the object score is derived from the entities detected in the predicted
-frame that match the query. Predictions are re-ranked by ``final_score`` in
-descending order with fresh strictly increasing ranks; ties keep the original
-ranking order (stable sort).
-
-This is a post-processing stage over prediction artifacts only. It does not
-modify retrieval, the scorer, evaluation, the embedding/index pipeline, or the
-prediction-artifact schema. The output is a standard prediction artifact that
-remains loadable by ``read_kis_prediction_artifact`` /
-``load_kis_predictions_for_scoring`` and consumable by ``evaluate_kis``.
-
-Source: `aic2026.object_reranking` (`ObjectRerankingConfig`,
-`FrameObjectSource`, `build_reranked_artifact`,
-`rerank_prediction_artifact`, `write_reranked_prediction_artifact`).
-
-### Matching method
-
-1. The query text is tokenized into word tokens.
-2. Tokens are normalized by `normalization_method`:
-   - `none` — raw tokens (case-sensitive).
-   - `lower` — lowercase only.
-   - `stem` — lowercase plus naive suffix stripping (`ing`/`ed`/`es`/`s`).
-3. The frame-level object representation keeps only detections with
-   `confidence >= confidence_threshold`, merging duplicate entities by maximum
-   confidence.
-4. An entity matches the query when its normalized entity-name tokens overlap
-   the normalized query tokens.
-5. The object score is the maximum (`max`, default) or sum (`sum`) of the
-   confidences of matched entities; `0.0` when nothing matches.
-
-### Input/output schema
-
-- **Input (prediction)**: any `predict-kis` prediction artifact (schema
-  version `1.0`); predictions reference original-video `frame_index` values.
-- **Input (objects)**: `data/raw/aic2026_batch1/objects/<VIDEO_ID>/<NNN>.json`
-  (keyed by keyframe ordinal) plus `map-keyframes/<VIDEO_ID>.csv`, used to
-  resolve each predicted `frame_index` to a keyframe ordinal.
-- **Output**: a new prediction artifact (same schema version `1.0`) with the
-  same top-level metadata (evaluation set, index reference, model metadata,
-  query text field) but updated `score` (combined score) and `rank` per
-  prediction. `run_id` defaults to a deterministic id derived from the source
-  run id and the configuration; `created_at` is the run timestamp.
-
-### Python API
-
-```python
-from aic2026.object_reranking import (
-    FrameObjectSource,
-    ObjectRerankingConfig,
-    build_reranked_artifact,
-    rerank_prediction_artifact,
-    write_reranked_prediction_artifact,
-)
-
-source = FrameObjectSource(
-    objects_dir="data/raw/aic2026_batch1/objects",
-    map_dir="data/raw/aic2026_batch1/map-keyframes",
-)
-config = ObjectRerankingConfig(
-    confidence_threshold=0.3,
-    lambda_weight=1.0,
-    normalization_method="lower",   # "none" | "lower" | "stem"
-    object_score_method="max",      # "max" | "sum"
-)
-
-# From an in-memory artifact or a path; object_source may also be a directory.
-reranked = rerank_prediction_artifact(
-    prediction_artifact="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
-    object_source=source,
-    config=config,
-)
-
-# Persist with the standard atomic artifact writer.
-write_reranked_prediction_artifact(
-    output_path="data/interim/predictions/kis-obj-rerank-l1-c0.3.json",
-    source_path="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
-    object_source=source,
-    config=config,
-    run_id="obj-rerank-1",
-)
-```
-
-`rerank_prediction_artifact` accepts a `KisPredictionArtifact` or a path for
-`prediction_artifact`, and a `FrameObjectSource` or an objects directory for
-`object_source`. It raises `FileNotFoundError` when a collection or artifact
-path is absent and `ValueError` for invalid configuration or payloads.
-
-### CLI
-
-```bash
-aic2026 object-rerank-kis \
-  --prediction data/interim/predictions/kis-l14-laion2b-full-en-top1000.json \
-  --output data/interim/predictions/kis-obj-rerank-l1-c0.3.json \
-  --objects-dir data/raw/aic2026_batch1/objects \
-  --lambda 1.0 \
-  --confidence-threshold 0.3
-```
-
-Available flags: `--prediction` (required), `--output` (required),
-`--objects-dir` (defaults to `config raw_dir/objects`), `--map-dir` (defaults
-to the sibling `map-keyframes` of `--objects-dir`), `--lambda`,
-`--confidence-threshold`, `--normalization-method` (`none`/`lower`/`stem`),
-`--object-score-method` (`max`/`sum`), and `--run-id`.
-
-Expected stdout:
-
-```text
-Reranked prediction artifact: data/interim/predictions/kis-obj-rerank-l1-c0.3.json
-Processed queries: 101/101
-Run id: object-rerank-kis-run-20260814T050833Z-l1-c0.3-nlower-mmax
-```
-
-### Reproduction steps
-
-1. Produce (or reuse) a base prediction artifact:
-   `aic2026 predict-kis ...` (Section 4/5) or use an existing artifact such as
-   `kis-l14-laion2b-full-en-top1000.json`.
-2. Re-run the CLI command above with fixed `--lambda`,
-   `--confidence-threshold`, and normalization/aggregation choices. Record the
-   full command and both artifact paths.
-3. The reranking is deterministic: the same source artifact, object/map
-   collections, and configuration reproduce identical `score`, `rank`, and
-   `run_id` (except `created_at`).
-4. Evaluate the reranked artifact with the standard scorer and compare against
-   the base artifact using the same evaluation procedure.
-
-The full `evaluate_kis` metrics shown in earlier sections are reproduced by
-feeding the reranked artifact to `load_kis_predictions_for_scoring` +
-`evaluate_kis` exactly like any other prediction artifact.
-
----
-
-## 15. BTC keyframe extraction analysis for KIS
-
-Measures how well the current BTC-provided keyframes cover the KIS
-ground-truth events, before implementing any new keyframe extractor. This is a
-read-only analysis step: it never runs or modifies retrieval, the embedding
-pipeline, the scorer, or evaluation.
-
-Source: `aic2026.keyframe_analysis` (`run_keyframe_analysis`,
-`load_keyframes`, `analyze_keyframe_statistics`, `analyze_gt_coverage`,
-`build_error_report`, `analyze_clip_comparison`, `format_report`,
-`write_report`). The CLI is `scripts/analyze_keyframes.py`.
-
-### Inputs
-
-- **Keyframe set:** a canonical artifact `frames.ndjson` listing the current
-  keyframes with their original-video `frame_index`
-  (e.g. `data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson`).
-- **Evaluation set:** `data/eval/eval_set.csv` (KIS queries).
-- **CLIP baseline:** a `predict-kis` prediction artifact
-  (e.g. `data/interim/predictions/kis-l14-laion2b-full-en-top1000.json`).
-
-### Report sections
-
-1. **Keyframe statistics** — total videos, total keyframes (unique original
-   frames), raw `frames.ndjson` record count and duplicate-record count, mean
-   unique keyframes per video, and the per-video distribution (min/max,
-   p50/p90/p95). When a `frames.ndjson` records the same original frame more
-   than once, the frame is counted once for coverage and per-video statistics;
-   the raw record and duplicate counts are reported so the statistics reconcile
-   with the artifact row count.
-2. **GT frame coverage** — for each query, whether a keyframe falls inside the
-   GT frame interval (exact hit) and the minimum absolute frame distance from
-   any keyframe of the GT video to the interval (relaxed hit). Summaries report
-   the exact-hit count/percentage and relaxed-hit percentages at thresholds
-   `<=10`, `<=30`, `<=60`, `<=150`, `<=300` frames (configurable). Queries
-   whose GT video has no keyframes have no defined distance.
-3. **Per-query error report** — every miss (no exact hit), with query id, GT
-   video, GT range, closest keyframe `frame_index`, distance, and number of
-   keyframes in the GT video, sorted worst misses first (no-keyframe videos
-   first, then by distance descending).
-4. **CLIP baseline comparison** — for each query, whether the GT video / GT
-   frame appears in the CLIP top-k predictions and whether missing keyframe
-   coverage can explain a frame failure. Exclusive per-query categories:
-
-   - `GT event covered by keyframes` — a keyframe lies inside the GT interval,
-     so the correct frame is extractable and any CLIP failure is a ranking
-     problem, not a coverage problem.
-   - `GT event not covered by keyframes` — the GT interval has no keyframe.
-   - `GT video retrieved but frame coverage issue` — the most specific case:
-     CLIP retrieved the GT video but not a GT frame, and the GT event is not
-     covered by a keyframe, so the coverage gap can explain the frame failure.
-
-### Python API
-
-```python
-from aic2026.keyframe_analysis import run_keyframe_analysis, write_report
-
-report = run_keyframe_analysis(
-    evaluation_set_path="data/eval/eval_set.csv",
-    frames_path="data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson",
-    clip_predictions_path="data/interim/predictions/kis-l14-laion2b-full-en-top1000.json",
-    relaxed_thresholds=(10, 30, 60, 150, 300),
-    prediction_top_k=1000,
-)
-write_report("data/analysis/keyframes/current_keyframe_analysis.json", report)
-```
-
-`run_keyframe_analysis` raises `FileNotFoundError` when an input path is absent
-and `ValueError` for invalid queries, thresholds, or prediction payloads.
-
-### CLI
-
-```bash
-python scripts/analyze_keyframes.py \
-  --eval-csv data/eval/eval_set.csv \
-  --frames data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
-  --clip-predictions data/interim/predictions/kis-l14-laion2b-full-en-top1000.json \
-  --output data/analysis/keyframes/current_keyframe_analysis.json
-```
-
-Available flags: `--eval-csv`, `--frames`, `--clip-predictions`,
-`--relaxed-thresholds` (comma-separated distances, default
-`10,30,60,150,300`), `--top-k` (default 1000), and `--output` (default
-`data/analysis/keyframes/current_keyframe_analysis.json`). The human-readable
-report is printed to stdout and the full report is written as structured JSON
-(atomic write) to `--output`.
-
-## 16. Resumable, hardware-aware shard embedding
+## 10. Resumable, hardware-aware shard embedding
 
 Builds a bounded embedding "shard" from a canonical artifact ``frames.ndjson``
 using a reusable :class:`ImageEmbedder`, designed so the full keyframe set can
@@ -1404,74 +743,16 @@ clean run; for real models only batch-boundary float noise (~1e-8) may differ.
 ### Distributed usage example
 
 For a laptop cluster, use the deterministic split/embed/merge workflow in
-Section 18: split the keyframe list into balanced worker inputs, embed one
+Section 11: split the keyframe list into balanced worker inputs, embed one
 worker per machine, then merge the shards back into a single artifact.
 
 Each worker's shard is independently resumable, and a worker may resume on a
 different machine (device changes are allowed). The merged artifact records
 the shared `embedding_space` identity before building an index.
 
-## 17. Deduplicated keyframe artifact
+## 11. Distributed shard workflow (split -> embed -> merge -> index)
 
-The BTC-provided `frames.ndjson` may contain duplicate records: the same
-`(video_id, frame_index)` key (the 0-based position of the keyframe in the
-original encoded video) can appear more than once. For example the first
-5000 records of the raw artifact contain duplicates such as
-`('L21_V006', 0)`, `('L21_V007', 0)`, ... (about 614 duplicate records across
-the full 177,321-record artifact).
-
-The distributed splitter (Section 18) intentionally rejects duplicate
-keyframes: splitting duplicates into different workers would make the merge
-reject the artifact after wasting embedding time. Deduplication is therefore a
-separate preprocessing step that produces a distinct, reproducible artifact,
-and downstream experiments should reference the deduplicated artifact rather
-than the raw BTC one.
-
-`scripts/deduplicate_keyframes.py` implements Phase 0 (logic in
-`aic2026.keyframe_dedup`, `deduplicate_keyframes`):
-
-```bash
-python scripts/deduplicate_keyframes.py \
-  --input data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
-  --output data/interim/keyframes/btc-v1-dedup/frames.ndjson \
-  --report data/interim/keyframes/btc-v1-dedup/dedup_report.json
-```
-
-Behavior:
-
-- Key identity is `(video_id, frame_index)`.
-- **Keep-first strategy**: the first occurrence of each key is kept; later
-  occurrences are dropped. `strategy` in the report is always `"keep_first"`.
-- The original ordering of the remaining records is preserved.
-- The input artifact is never modified.
-- The output is written atomically (same-directory temp file + rename), so a
-  failed or interrupted run never leaves a partial artifact that looks valid;
-  on any error no output or report is produced.
-- When `--report` is omitted, the report is written as `dedup_report.json`
-  next to `--output`.
-
-The JSON report (`DedupReport`, schema version 1.0) records `source_path`,
-`output_path`, `original_records`, `unique_records`, `removed_duplicates`,
-`duplicate_examples` (the first duplicate keys, first-seen order), and
-`strategy`:
-
-```text
-Original records:   177321
-Unique records:     176707
-Removed duplicates: 614
-Strategy:           keep_first
-Output:             data/interim/keyframes/btc-v1-dedup/frames.ndjson
-Report:             data/interim/keyframes/btc-v1-dedup/dedup_report.json
-```
-
-After deduplication the output is a canonical `frames.ndjson` that the
-splitter accepts. Experiments that embed the full keyframe set must start from
-this deduplicated artifact so every `(video_id, frame_index)` appears exactly
-once in the final embedding artifact.
-
-## 18. Distributed shard workflow (split -> embed -> merge -> index)
-
-Section 16 built a single resumable shard. For a laptop cluster, split the
+Section 10 built a single resumable shard. For a laptop cluster, split the
 full keyframe set into balanced, deterministic worker inputs, embed one worker
 per machine, merge the completed shards back into one artifact, then build the
 index. All three steps are reproducible and resumable.
@@ -1530,7 +811,9 @@ experiment input exactly, and duplicates distributed across workers would later
 make the merge reject the artifact after wasting embedding time. If your
 source `frames.ndjson` contains duplicate keyframes, create a deduplicated
 frames artifact first (keeping one record per `(video_id, frame_index)`, without
-modifying the original data) and split that instead.
+modifying the original data) and split that instead. The current extraction
+pipeline guarantees unique keys, so this situation no longer arises for
+artifacts produced by `scripts/extract_keyframes.py`.
 
 ### Steps 2-3: distribute and embed (one worker per machine)
 
@@ -1657,7 +940,7 @@ python scripts/merge_embedding_shards.py \
 This exercises input discovery, splitting, embedding, and merging end to end on
 a tiny subset without running the full 873-video set.
 
-## 19. Video source manifest
+## 12. Video source manifest
 
 The keyframe-extraction workflow starts from a canonical video inventory: a
 single `videos.json` listing every `.mp4` under a raw video directory, with
@@ -1719,12 +1002,12 @@ Schema compatibility: the serialized format is additive over the existing
 file is consumed unchanged by:
 
 ```text
-video split (Section 20)
-  -> keyframe extraction (Section 20)
-  -> embedding (Section 16)
+video split (Section 13)
+  -> keyframe extraction (Section 13)
+  -> embedding (Section 10)
 ```
 
-## 20. DAKE-inspired keyframe extraction
+## 13. DAKE-inspired keyframe extraction
 
 The BTC-provided keyframes are a closed data source. To make the pipeline
 self-sufficient, this repository ships a lightweight, DAKE-inspired extractor
@@ -1742,7 +1025,7 @@ code needs to change.
 2. extract     scripts/extract_keyframes.py                  (one worker/machine)
 3. merge       scripts/merge_keyframe_shards.py              (once, any machine)
 4. materialize scripts/materialize_keyframes.py              (once, any machine)
-5. embed       scripts/embed_shard.py                        (unchanged, Section 16)
+5. embed       scripts/embed_shard.py                        (unchanged, Section 10)
 ```
 
 ### Input: video manifest (`videos.json`)
@@ -1763,7 +1046,7 @@ Extraction consumes a video manifest listing `video_id` + `path` entries
 
 Paths may be absolute (legacy manifests) or relative; relative paths are
 resolved against the manifest's `source_dir` (when present) or the
-`--video-root` override (Section 20, Step 2).
+`--video-root` override (Section 13, Step 2).
 
 ### Step 1: split (deterministic and balanced)
 
@@ -1903,7 +1186,7 @@ Guarantees:
 - **Deterministic**: same manifest + same config => identical records.
 - **Canonical**: `frames.ndjson` lines match `KeyframeTiming.to_dict()` and
   the CSV files match the `parse_keyframe_map` column contract, so the output
-  feeds the unchanged split -> embed -> merge -> index workflow (Section 18).
+  feeds the unchanged split -> embed -> merge -> index workflow (Section 11).
 
 `manifest.json` records the extractor/scorer/frame reader, the effective
 parameters, `config_hash`, `source_videos`, counts, and aggregate statistics
@@ -2067,106 +1350,7 @@ sampler by implementing its protocol and registering it in the
 `SHOT_DETECTOR_NAMES` / `SAMPLER_NAMES` tuples; `config_hash` covers both so a
 resume or merge across different detectors/samplers is rejected.
 
-## 21. Experiment tracking
-
-Now that experiments flow through split -> embed -> merge -> index -> evaluate,
-distinct model runs (OpenCLIP, Jina, SigLIP, MobileCLIP, ...) must not be
-confused. Each experiment gets a small, self-describing manifest
-(`manifest.json`) recording its identity, provenance, and parameters. This is
-metadata/documentation infrastructure only: it does not modify retrieval,
-scoring, evaluation, embedding, or artifact-schema logic.
-
-The manifest lives in `aic2026.experiment_manifest` (`ExperimentManifest`,
-`save_manifest`, `load_manifest`). Required fields are `experiment_id`,
-`experiment_type` (`embedding`, `retrieval`, `reranking`, `fusion`, or any
-custom string), `created_at`, and `description`. Optional fields cover the
-embedding side (`model_name`, `embedding_space`, `embedding_dim`,
-`frames_source`, `split_manifest`, `workers`, `hardware`) and the retrieval
-side (`index_path`, `prediction_artifact`, `evaluation_set`, `metrics`), plus a
-free-form `parameters` dict. JSON output is deterministic (dataclass field
-order, sorted nested dicts) and written atomically.
-
-### Recommended layout
-
-```text
-experiments/
-    openclip-baseline/
-        manifest.json
-    jina-v1/
-        manifest.json
-    siglip-v1/
-        manifest.json
-```
-
-### Example
-
-```bash
-python scripts/create_experiment_manifest.py \
-  --output experiments/jina-v1/manifest.json \
-  --experiment-id jina-v1 \
-  --type embedding \
-  --model jina-clip-v2 \
-  --frames-source btc-keyframes-v1 \
-  --description "Jina CLIP embedding experiment" \
-  --parameter batch_size=64 \
-  --parameter seed=42
-```
-
-This writes:
-
-```json
-{
-  "schema_version": "1.0",
-  "experiment_id": "jina-v1",
-  "experiment_type": "embedding",
-  "created_at": "2026-08-14T...",
-  "description": "Jina CLIP embedding experiment",
-  "model_name": "jina-clip-v2",
-  "frames_source": "btc-keyframes-v1",
-  "parameters": {"batch_size": 64, "seed": 42}
-}
-```
-
-`--parameter` / `--metric` accept repeated `key=value` pairs whose values are
-typed (bool, int, float, else string), e.g. `--parameter fp16=true`. For a
-distributed run, also record the split and merge inputs:
-
-```bash
-python scripts/create_experiment_manifest.py \
-  --output experiments/openclip-baseline/manifest.json \
-  --experiment-id openclip-baseline \
-  --type embedding \
-  --model openclip:ViT-L-14:laion2b_s32b_b82k \
-  --frames-source data/interim/embeddings/openclip-l14-laion2b-full/frames.ndjson \
-  --split-manifest data/splits/split_manifest.json \
-  --workers 5 \
-  --hardware "3x mps, 2x cpu" \
-  --description "OpenCLIP L-14 distributed baseline" \
-  --parameter batch_size=64
-```
-
-Manifests can also be created and read from Python:
-
-```python
-from aic2026.experiment_manifest import load_manifest, new_manifest, save_manifest
-m = new_manifest(
-    experiment_id="siglip-v1",
-    experiment_type="retrieval",
-    description="SigLIP retrieval run",
-    model_name="siglip2",
-    index_path="data/interim/index.npy",
-    evaluation_set="data/eval/eval_set.csv",
-    metrics={"ndcg": 0.42},
-)
-save_manifest("experiments/siglip-v1/manifest.json", m)
-loaded = load_manifest("experiments/siglip-v1/manifest.json")
-```
-
-Keep one manifest per experiment directory, name it `manifest.json`, and treat
-`experiment_id` as globally unique so results from different models and runs
-can be compared without ambiguity.
-
-## 22. Distributed worker guide: extract keyframes and embed
+## 14. Distributed worker guide: extract keyframes and embed
 
 This section is the end-to-end runbook for **one assigned worker** in the
 distributed keyframe-extraction + embedding workflow. A new team member should
@@ -2253,7 +1437,7 @@ project/
 ```
 
 Extraction writes timing records only; the keyframe images the embedding step
-consumes are produced by the materialization stage (Section 20, Step 3b), not
+consumes are produced by the materialization stage (Section 13, Step 3b), not
 taken from the BTC raw data.
 
 After you run worker_000, the extraction and embedding commands (Sections 5-6)
@@ -2470,7 +1654,7 @@ deterministically; it must be fixed for a given worker so a resumed run matches.
 Each keyframe record in `frames.ndjson` carries a 1-based `keyframe_ordinal`
 (its position in the extraction's new selection). The embedder resolves the
 image for that record as `<keyframes-root>/images/<video_id>/<NNN:06d>.jpg`
-(the materialized `adaptive_sbd_v1` layout, Section 20 Step 3b). When the
+(the materialized `adaptive_sbd_v1` layout, Section 13 Step 3b). When the
 `images/` directory is absent, it falls back to the legacy BTC-style
 `<keyframes-root>/keyframes/<video_id>/NNN.jpg` layout (trying `.jpg`, then
 `.jpeg`, then `.png`), where `NNN` is the record's ordinal. The default
@@ -2482,7 +1666,7 @@ Two consequences of this contract:
 
 - **Materialize before embedding.** `extract_keyframes.py` writes only timing
   records (`frames.ndjson`, `map-keyframes/*.csv`, `manifest.json`); it never
-  materializes JPEGs. Run `scripts/materialize_keyframes.py` (Section 20,
+  materializes JPEGs. Run `scripts/materialize_keyframes.py` (Section 13,
   Step 3b) first to produce the `images/<video_id>/<NNN:06d>.jpg` collection
   your `frames.ndjson` records resolve against. The legacy `keyframes/` layout
   is only used as a fallback when no `images/` directory exists.
@@ -2686,7 +1870,7 @@ Verify by listing the directory and comparing with the manifest's recorded
 - [ ] embedding artifact generated (`embeddings.npy`, `manifest.json`)
 - [ ] manifests included in the folder you send back
 
-## 23. QA task foundation
+## 15. QA task foundation
 
 The QA task foundation (`aic2026.qa`) produces ranked retrieval evidence for
 QA queries using the same index retriever and candidate foundation as KIS. It
@@ -2825,7 +2009,7 @@ evidence.
 Not implemented. `aic2026.qa.qa_scoring` documents the intended contract and
 always raises `NotImplementedError`; see `docs/data-contracts.md`.
 
-## 24. QA smoke test (synthetic, end-to-end)
+## 16. QA smoke test (synthetic, end-to-end)
 
 A reproducible end-to-end QA pipeline smoke test on a synthetic QA query set.
 It validates the whole chain — synthetic input → QA dataset loader →
@@ -2902,69 +2086,7 @@ The logic lives in `aic2026.qa.qa_smoke` (reusable, tested in
 - The final BTC submission format, which is not yet confirmed (see the
   provisional `provisional-v1` note in `docs/data-contracts.md`).
 
-## 25. Frame lookup (annotation utility)
-
-A general-purpose frame lookup tool that resolves a keyframe reference
-(`L25_V085/000123.jpg` or `L25_V085 123`) against any canonical keyframe
-artifact directory and optionally derives an annotation GT frame range.
-
-### Purpose
-
-The tool exists for annotation workflows that need stable frame identities
-and derived GT ranges, without depending on which extractor or artifact
-produced the keyframes:
-
-- **KIS**: derive `gt_frame_start` / `gt_frame_end` columns for the
-  evaluation CSV by centering a `--window-sec` window on a chosen keyframe.
-- **QA**: select evidence frames for QA queries and for QA evaluation.
-- **TRAKE**: annotate event time ranges as `(gt_frame_start, gt_frame_end)`.
-
-### Contract it relies on
-
-The tool depends only on the canonical keyframe artifact schema:
-
-- `frames.ndjson` — one canonical keyframe record per line (identity fields
-  `keyframe.video_id`, `keyframe.keyframe_ordinal`, `frame_index` are
-  required; `pts_time` / `fps` are preserved when present and tolerated when
-  absent);
-- an optional `manifest.json` (presence/absence is tolerated; only
-  `schema_version` is reported, no artifact id or extractor name is required);
-- an optional canonical `images/<video_id>/<ordinal:06d>.jpg` collection.
-
-It deliberately does **not** read or require legacy maps, BTC keyframe
-folders, or any extractor-specific layout such as `adaptive_sbd_v1`. Future
-artifacts work unchanged as long as `frames.ndjson` follows the canonical
-schema. Stored metadata is never modified: the `--window-sec` GT range is
-derived and clamped (start never below frame 0), not written back.
-
-### How to run
-
-```bash
-source .venv/bin/activate
-python scripts/frame_lookup.py \
-    --artifact-dir data/keyframes/adaptive_sbd_v1 "L25_V085/000123.jpg"
-
-python scripts/frame_lookup.py \
-    --artifact-dir another/keyframe_artifact --window-sec 2.0 "L25_V085 123"
-```
-
-Options:
-
-- `--artifact-dir <dir>` (required): directory containing `frames.ndjson`.
-- `--window-sec <float>`: total GT window duration in seconds; derives
-  `gt_frame_start` / `gt_frame_end` from the record's `fps` (fails if the
-  record stores no `fps`).
-- `--config <yaml>`: optional YAML config; its `frame_lookup.window_sec` is
-  used as the default when `--window-sec` is absent (explicit CLI flags
-  override the config).
-
-Output is a deterministic, column-aligned text record. On lookup or input
-errors the script prints `error: ...` to stderr and exits non-zero.
-
-The logic lives in `aic2026.frame_lookup` (reusable, tested in
-`tests/test_frame_lookup.py`); `scripts/frame_lookup.py` is a thin CLI.
-
-## 26. Caption generation
+## 17. Caption generation
 
 The caption stage augments canonical keyframes with model-generated textual
 captions, producing a resumable caption artifact under
@@ -3108,7 +2230,7 @@ The pipeline lives in `aic2026.caption_generation` (reusable, tested in
 `tests/test_caption_generation.py`); `scripts/generate_captions.py` is a thin
 CLI. Caption embedding / retrieval fusion is not implemented yet.
 
-## 27. OCR generation (PaddleOCR PP-OCRv5)
+## 18. OCR generation (PaddleOCR PP-OCRv5)
 
 The OCR stage augments canonical keyframes with extracted text as a separate
 retrieval modality, producing a resumable OCR artifact under
