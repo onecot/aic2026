@@ -404,7 +404,10 @@ class TestBuildSubmissionCompatibility:
         )
 
         assert result["counts"] == {"kis": 1, "qa": 1, "trake": 1}
-        assert all(row["method"] == "exact" for row in result["mapping"])
+        # Adapter-produced artifacts always match via the filename-derived
+        # query id (strictest priority); text fallbacks are for legacy
+        # artifacts without ids.
+        assert all(row["method"] == "query_id" for row in result["mapping"])
         assert result["zip_info"]["valid"] is True
 
         mapping_by_file = {row["query_file"]: row for row in result["mapping"]}

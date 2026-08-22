@@ -235,6 +235,102 @@ class TestQueryMatching:
         with pytest.raises(QueryMatchError, match="ambiguous"):
             find_unique_match("dup", results, lambda r: r.query_text)
 
+    def test_duplicate_query_text_resolved_by_query_id(self) -> None:
+        # Regression: two BTC queries share identical text; the
+        # filename-derived query id must disambiguate them.
+        results = (
+            QueryPredictionResult(
+                query_id="btc-p1-8-kis", query_text="giống hệt nhau", predictions=()
+            ),
+            QueryPredictionResult(
+                query_id="btc-p1-14-kis", query_text="giống hệt nhau", predictions=()
+            ),
+        )
+        matched, method = find_unique_match(
+            "giống hệt nhau",
+            results,
+            lambda r: r.query_text,
+            expected_query_id="btc-p1-14-kis",
+            get_id=lambda r: r.query_id,
+        )
+        assert matched.query_id == "btc-p1-14-kis"
+        assert method == "query_id"
+
+    def test_whitespace_variant_of_duplicate_text_also_resolved_by_query_id(self) -> None:
+        # Even when file text differs only in whitespace from both artifact
+        # texts (which would be ambiguous under text matching alone), the
+        # query id wins.
+        results = (
+            QueryPredictionResult(
+                query_id="btc-p1-8-kis", query_text="a  b\nc", predictions=()
+            ),
+            QueryPredictionResult(
+                query_id="btc-p1-14-kis", query_text="a b c", predictions=()
+            ),
+        )
+        matched, method = find_unique_match(
+            "a\nb\tc",
+            results,
+            lambda r: r.query_text,
+            expected_query_id="btc-p1-8-kis",
+            get_id=lambda r: r.query_id,
+        )
+        assert matched.query_id == "btc-p1-8-kis"
+        assert method == "query_id"
+
+    def test_falls_back_to_text_when_expected_query_id_absent(self) -> None:
+        results = (
+            QueryPredictionResult(query_id="other-id", query_text="unique text", predictions=()),
+        )
+        matched, method = find_unique_match(
+            "unique text",
+            results,
+            lambda r: r.query_text,
+            expected_query_id="btc-p1-99-kis",
+            get_id=lambda r: r.query_id,
+        )
+        assert matched.query_id == "other-id"
+        assert method == "exact"
+
+    def test_ambiguous_query_id_raises_instead_of_degrading_to_text(self) -> None:
+        results = (
+            QueryPredictionResult(query_id="btc-p1-14-kis", query_text="dup", predictions=()),
+            QueryPredictionResult(query_id="btc-p1-14-kis", query_text="dup", predictions=()),
+        )
+        with pytest.raises(QueryMatchError, match="ambiguous query_id match"):
+            find_unique_match(
+                "dup",
+                results,
+                lambda r: r.query_text,
+                expected_query_id="btc-p1-14-kis",
+                get_id=lambda r: r.query_id,
+            )
+
+    def test_query_id_with_different_text_fails_loudly(self) -> None:
+        # Regression guard: different query batches share the p1-N naming
+        # scheme. An id match whose text belongs to another batch must fail
+        # instead of exporting unrelated predictions.
+        results = (
+            QueryPredictionResult(
+                query_id="btc-p1-14-kis",
+                query_text="Đoạn clip về điêu khắc cát",
+                predictions=(),
+            ),
+        )
+        with pytest.raises(QueryMatchError, match="query text differs"):
+            find_unique_match(
+                "Người đầu bếp đặt nguyên liệu",
+                results,
+                lambda r: r.query_text,
+                expected_query_id="btc-p1-14-kis",
+                get_id=lambda r: r.query_id,
+            )
+
+    def test_expected_query_id_requires_get_id(self) -> None:
+        results = (QueryPredictionResult(query_id="kis_001", query_text="a", predictions=()),)
+        with pytest.raises(ValueError, match="get_id is required"):
+            find_unique_match("a", results, lambda r: r.query_text, expected_query_id="x")
+
 
 # ---------------------------------------------------------------------------
 # 2. CSV format validation

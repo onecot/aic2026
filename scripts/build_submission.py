@@ -8,11 +8,16 @@ submission format.  Packaging produces a ``submission.zip`` that contains the
 
 Matching is strict:
 
-1. exact ``query_text`` equality;
-2. whitespace/newline-normalized equality.
+1. exact ``query_id`` equality with the id derived from the BTC filename
+   (``query-<name>-<task>.txt`` -> ``btc-<name>-<task>``, matching the BTC
+   inference adapter's deterministic ids);
+2. exact ``query_text`` equality (fallback when no artifact result carries
+   the expected id);
+3. whitespace/newline-normalized equality.
 
 Vague substring matching is never used.  If a query has no unique match, or
-the match is ambiguous, the build fails loudly and generates nothing.
+the match is ambiguous at any priority level, the build fails loudly and
+generates nothing.
 
 This module only converts existing prediction artifacts into a valid BTC
 submission.  It does not run retrieval, does not generate answers, and does
@@ -146,25 +151,59 @@ def find_unique_match(
     query_text: str,
     results: tuple[Any, ...],
     get_text: Callable[[Any], str],
+    *,
+    expected_query_id: str | None = None,
+    get_id: Callable[[Any], str] | None = None,
 ) -> tuple[Any, str]:
-    """Find exactly one artifact result for a query text.
+    """Find exactly one artifact result for a query.
 
     Matching priority:
-        1. exact ``query_text`` equality;
-        2. whitespace/newline-normalized equality.
+        1. exact ``query_id`` equality with ``expected_query_id`` (when
+           supplied together with ``get_id``); the matched result must ALSO
+           have whitespace-normalized ``query_text`` equal to the file text,
+           otherwise the artifact belongs to a different query batch and the
+           build fails loudly instead of exporting unrelated predictions;
+        2. exact ``query_text`` equality;
+        3. whitespace/newline-normalized ``query_text`` equality.
+
+    Ambiguity fails loudly at every priority level; a missing query-id match
+    falls back to text matching, but an ambiguous one never silently degrades
+    to text.
 
     Expected input:
         - query_text: the exact text read from a BTC query file.
         - results: tuple of artifact query results.
         - get_text: callable returning the ``query_text`` of a result.
+        - expected_query_id: optional id derived from the BTC filename
+          (``btc-<name>-<task>``).
+        - get_id: callable returning the ``query_id`` of a result (required
+          when ``expected_query_id`` is given).
 
     Returns:
-        - ``(result, method)`` where ``method`` is ``"exact"`` or
-          ``"normalized"``.
+        - ``(result, method)`` where ``method`` is ``"query_id"``,
+          ``"exact"``, or ``"normalized"``.
 
     Raises:
         - QueryMatchError: if there is no match or the match is ambiguous.
     """
+    if expected_query_id is not None:
+        if get_id is None:
+            raise ValueError("get_id is required when expected_query_id is given")
+        by_id = [r for r in results if get_id(r) == expected_query_id]
+        if len(by_id) == 1:
+            candidate = by_id[0]
+            if normalize_query_text(get_text(candidate)) == normalize_query_text(query_text):
+                return candidate, "query_id"
+            raise QueryMatchError(
+                f"query_id {expected_query_id!r} matched but query text differs; "
+                "the artifact appears to come from a different query batch"
+            )
+        if len(by_id) > 1:
+            raise QueryMatchError(
+                f"ambiguous query_id match for {expected_query_id!r} "
+                f"({len(by_id)} candidates)"
+            )
+
     stripped = query_text.strip()
     exact = [r for r in results if get_text(r).strip() == stripped]
     if len(exact) == 1:
@@ -749,24 +788,40 @@ def build_submission(
     for info in query_files:
         totals[info.task] += 1
         query_text = read_query_text(info.path)
+        # The BTC inference adapter names prediction queries
+        # ``btc-<name>-<task>``; derive the same id from the filename so
+        # matching is unique even when two queries share identical text.
+        expected_query_id = f"btc-{info.name}-{info.task}"
         try:
             if info.task == "kis":
                 if kis_results is None:
                     raise QueryMatchError("KIS artifact not provided")
                 result, method = find_unique_match(
-                    query_text, kis_results, lambda r: r.query_text
+                    query_text,
+                    kis_results,
+                    lambda r: r.query_text,
+                    expected_query_id=expected_query_id,
+                    get_id=lambda r: r.query_id,
                 )
             elif info.task == "qa":
                 if qa_art is None:
                     raise QueryMatchError("QA artifact not provided")
                 result, method = find_unique_match(
-                    query_text, qa_art.query_results, lambda r: r.query_text
+                    query_text,
+                    qa_art.query_results,
+                    lambda r: r.query_text,
+                    expected_query_id=expected_query_id,
+                    get_id=lambda r: r.query_id,
                 )
             else:
                 if trake_art is None:
                     raise QueryMatchError("TRAKE artifact not provided")
                 result, method = find_unique_match(
-                    query_text, trake_art.query_results, lambda r: r.query_text
+                    query_text,
+                    trake_art.query_results,
+                    lambda r: r.query_text,
+                    expected_query_id=expected_query_id,
+                    get_id=lambda r: r.query_id,
                 )
         except QueryMatchError as exc:
             errors.append(f"{info.path.name}: {exc}")

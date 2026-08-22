@@ -35,6 +35,7 @@ coverage.xml
 *.swp
 *.swo
 .DS_Store
+.ipynb_checkpoints/
 
 # Logs
 *.log
@@ -53,3 +54,4 @@ outputs/
 *.pth
 *.onnx*.npy
 experiments/*/shard/*.npy
+submission/
