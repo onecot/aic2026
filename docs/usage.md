@@ -129,13 +129,27 @@ for vid in dataset.video_ids():
 
 ### Available implementations
 
-- `aic2026.model_backends.openclip.OpenClipEncoder` — the only current
-  encoder. Implements the `EmbeddingEncoder` protocol from
+- `aic2026.model_backends.jina.JinaClipEncoder` — the active production
+  encoder (`jina-clip-v2`); selected automatically by
+  `aic2026.image_embedder.create_text_encoder` when `models.jina` is
+  present in the config.
+- `aic2026.model_backends.openclip.OpenClipEncoder` — optional baseline
+  backend. Implements the `EmbeddingEncoder` protocol from
   `aic2026.embeddings`. Requires the optional `openclip` dependency group:
   `pip install -e ".[openclip]"`.
 - Any object satisfying the `EmbeddingEncoder` protocol
   (`embedding_space`, `encode_image`, `encode_text`) is a valid encoder;
   `encode_image_batch` / `encode_text_batch` are used when present.
+
+### Active model selection
+
+```python
+from aic2026.config import load_config
+from aic2026.image_embedder import create_text_encoder
+
+config = load_config()                  # models.jina (jina-clip-v2) is active by default
+encoder = create_text_encoder(config)   # JinaClipEncoder for the default config
+```
 
 ### OpenClipEncoder configuration
 
@@ -143,8 +157,8 @@ for vid in dataset.video_ids():
 from aic2026.config import load_config, OpenClipConfig
 from aic2026.model_backends.openclip import OpenClipEncoder
 
-config = load_config()                      # defaults: ViT-B-32, laion2b_s34b_b79k
-encoder = OpenClipEncoder(config.openclip)
+config = load_config()
+encoder = OpenClipEncoder(config.openclip)   # optional baseline backend
 
 # to override the checkpoint without editing configs/default.yaml,
 # construct an OpenClipConfig explicitly:
@@ -489,8 +503,8 @@ BTC baseline index.
 
 Flags:
 
-- `--config` — YAML config (defaults to `configs/default.yaml`); supplies the
-  OpenCLIP model/checkpoint.
+- `--config` — YAML config (defaults to `configs/default.yaml`); supplies
+  the active model section (`models.jina` / jina-clip-v2 by default).
 - `--evaluation-set` — evaluation CSV (default `data/eval/eval_set.csv`).
 - `--index-artifact` — index artifact directory (required).
 - `--output` — prediction artifact JSON path (required).
@@ -517,13 +531,13 @@ artifact = run_kis_prediction(
         evaluation_set_path=Path("data/eval/eval_set.csv"),
         index_artifact_dir=Path("data/interim/indexes/btc-batch1-full"),
         prediction_output_path=Path("data/interim/predictions/kis.json"),
-        model_config=config.openclip.__dict__,   # provenance only
+        model_config=config.model_config,   # provenance only
         top_k=100,
         query_text_field="query_text_en",
         allow_embedding_space_mismatch=False,
         run_id="my-run",
     ),
-    OpenClipEncoder(config.openclip),
+    create_text_encoder(config),   # active model section (jina-clip-v2 by default)
 )
 print(artifact.processed_query_count)
 ```
@@ -1903,7 +1917,7 @@ artifact = run_qa_prediction(
         evaluation_set_path=Path("data/eval/eval_set.csv"),
         index_artifact_dir=Path("data/interim/indexes/btc-batch1-full"),
         prediction_output_dir=Path("data/interim/predictions/qa"),
-        model_config=config.openclip.__dict__,   # provenance only
+        model_config=config.model_config,   # provenance only
         top_k=100,
         query_text_field="query_text_vi",
         video_aggregation=None,      # None = frame-level ranking
@@ -2086,151 +2100,7 @@ The logic lives in `aic2026.qa.qa_smoke` (reusable, tested in
 - The final BTC submission format, which is not yet confirmed (see the
   provisional `provisional-v1` note in `docs/data-contracts.md`).
 
-## 17. Caption generation
-
-The caption stage augments canonical keyframes with model-generated textual
-captions, producing a resumable caption artifact under
-`data/interim/captions/<artifact_id>/`. It reads the canonical keyframe
-artifact (`frames.ndjson` + `images/`) and never modifies it.
-
-Two caption backends are available (selected with `--backend`):
-
-| Backend | Runtime | Hardware | Default model |
-| --- | --- | --- | --- |
-| `qwen2.5-vl` | Transformers + Torch | CUDA / MPS / CPU | `Qwen2.5-VL-3B-Instruct` |
-| `jina-vlm-mlx` | MLX (`mlx-vlm`) | Apple Silicon (MPS) | `jinaai/jina-vlm-mlx` |
-
-`qwen2.5-vl` is the default backend and keeps existing behavior unchanged.
-
-### Prerequisites
-
-Backend runtimes are optional; install only what you use:
-
-```bash
-source .venv/bin/activate
-pip install -e '.[caption]'        # qwen2.5-vl: torch, transformers>=4.49, Pillow
-pip install -e '.[caption-mlx]'    # jina-vlm-mlx: mlx, mlx-vlm (main), transformers>=4.49, Pillow
-```
-
-- Qwen2.5-VL requires `transformers >= 4.49`.
-- Jina VLM MLX is a native MLX port (4-bit, ~2 GB weights) built for Apple
-  Silicon (macOS arm64) only; on other platforms it fails with a clear error
-  and you should use `qwen2.5-vl`. Because jina-vlm support is merged into
-  `mlx-vlm` main but not yet released, the `caption-mlx` group installs
-  `mlx-vlm` from the `main` branch.
-- Captioner runtimes are loaded lazily only when the CLI runs; the core
-  package and its unit tests do not require any backend runtime.
-
-### How to run (full keyframe set, Qwen2.5-VL)
-
-```bash
-source .venv/bin/activate
-python scripts/generate_captions.py \
-    --backend qwen2.5-vl \
-    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
-    --output-dir data/interim/captions/qwen2.5-vl-3b \
-    --model Qwen2.5-VL-3B-Instruct \
-    --batch-size 4 \
-    --device auto \
-    --resume
-```
-
-### How to run (full keyframe set, Jina VLM MLX on Apple Silicon)
-
-```bash
-source .venv/bin/activate
-python scripts/generate_captions.py \
-    --backend jina-vlm-mlx \
-    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
-    --output-dir data/interim/captions/jina-vlm-mlx \
-    --model jinaai/jina-vlm-mlx \
-    --device mps \
-    --batch-size 1 \
-    --resume
-```
-
-`--device mps` (or `auto` on Apple Silicon) is recommended. `--batch-size 1`
-is the safe default on a 16 GB unified-memory Mac; see the batch-size note
-below.
-
-### Options
-
-- `--backend qwen2.5-vl|jina-vlm-mlx`: caption backend (default:
-  `qwen2.5-vl`).
-- `--keyframes-dir <dir>`: canonical keyframe artifact directory
-  (default: `data/keyframes/adaptive_sbd_v1`).
-- `--output-dir <dir>`: caption artifact output directory.
-- `--model <name>`: short model name or a full checkpoint id (default:
-  `Qwen2.5-VL-3B-Instruct` for `qwen2.5-vl`, `jinaai/jina-vlm-mlx` for
-  `jina-vlm-mlx`); for Qwen a name without `/` is resolved to `Qwen/<name>`.
-- `--device auto|cpu|mps|cuda`: device selection (auto: CUDA > MPS > CPU for
-  Qwen; MLX uses Metal, so `jina-vlm-mlx` accepts only `auto`/`mps`).
-- `--batch-size <n>`: images captioned per model invocation (default 4;
-  use 1 for `jina-vlm-mlx` on 16 GB).
-- `--max-records <n>`: only caption the first `n` records (small-scale
-  validation before the full run).
-- `--resume` / `--no-resume`: resume an interrupted build (default resume on);
-  an already-complete artifact is validated and returned without recompute.
-- `--prompt <text>`: override the documented retrieval caption prompt.
-- `--progress auto|on|off`: progress reporting (default auto).
-- `-v`: verbose logging.
-
-### Batch-size note for Jina VLM MLX on 16 GB unified memory
-
-Jina VLM MLX loads ~2 GB of 4-bit weights. Each keyframe is a 1280×720 image
-that the vision encoder processes independently (`mlx-vlm` generates one
-caption per image), so memory per image is dominated by the encoded vision
-features, not a persistent batch buffer. `--batch-size 1` is the safe,
-recommended setting on a 16 GB Mac. `--batch-size > 1` is generally safe
-(batches only pipeline bookkeeping, not a single fused model call), but keep
-an eye on peak memory if macOS reports pressure; if so, lower it. The
-pipeline falls back to per-image captioning on any batch failure, so a large
-`--batch-size` never produces a crash-only outcome.
-
-### Output
-
-The artifact directory contains:
-
-- `manifest.json` — versioned metadata (model, checkpoint, device,
-  `batch_size`, `prompt`, record/video/failed counts, source, timestamps);
-- `captions.ndjson` — one `KeyframeCaption` per keyframe, in source row
-  order, each with `video_id`, `keyframe_ordinal`, `frame_index`, `caption`,
-  `status`, and optional `error`;
-- `checkpoint.json` — resume state, present only while the build is
-  incomplete (deleted on completion).
-
-Row `i` of `captions.ndjson` always corresponds to line `i` of the source
-`frames.ndjson`. A missing/corrupted image yields an `error` record (empty
-caption) instead of aborting the run, so row alignment is preserved.
-
-### Small-scale validation
-
-Before the full run, validate the workflow on a small subset:
-
-```bash
-python scripts/generate_captions.py \
-    --keyframes-dir data/keyframes/adaptive_sbd_v1 \
-    --output-dir /tmp/captions-smoke \
-    --max-records 100 \
-    --batch-size 4
-```
-
-A small successful run verifies input discovery, model loading, output
-schema, checkpoint behavior, and downstream compatibility.
-
-### Reproducibility notes
-
-- Qwen generation uses `do_sample=False`; Jina VLM MLX uses deterministic
-  decoding for stable output.
-- Input order is deterministic (source file order).
-- The exact `prompt` is recorded in `manifest.json`; resuming with a changed
-  `prompt`, `model`, checkpoint, source, or record count is rejected.
-
-The pipeline lives in `aic2026.caption_generation` (reusable, tested in
-`tests/test_caption_generation.py`); `scripts/generate_captions.py` is a thin
-CLI. Caption embedding / retrieval fusion is not implemented yet.
-
-## 18. OCR generation (PaddleOCR PP-OCRv5)
+## 17. OCR generation (PaddleOCR PP-OCRv5)
 
 The OCR stage augments canonical keyframes with extracted text as a separate
 retrieval modality, producing a resumable OCR artifact under

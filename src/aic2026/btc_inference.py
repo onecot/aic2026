@@ -26,7 +26,6 @@ occurs when the runner cores are invoked with a real encoder.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +37,7 @@ from aic2026.kis_prediction_runner import (
 )
 from aic2026.qa.answer_generation import DEFAULT_ANSWER_TOP_N
 from aic2026.qa.qa_prediction_runner import QaPredictionArtifact, run_qa_prediction_for_queries
+from aic2026.task_support import default_run_id
 from aic2026.text_query import TextQuery
 from aic2026.trake import TrakePredictionArtifact, run_trake_prediction_for_queries
 
@@ -64,11 +64,6 @@ def _to_text_queries(queries: tuple[BtcQuery, ...]) -> tuple[TextQuery, ...]:
         TextQuery(query_id=query.query_id, query_text=query.query_text)
         for query in queries
     )
-
-
-def _default_run_id(prefix: str) -> str:
-    """Return a timestamped default run id for a BTC task run."""
-    return f"{prefix}-run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
 
 def run_btc_kis_prediction(
@@ -115,7 +110,7 @@ def run_btc_kis_prediction(
         query_text_field="query_text_vi",
         model_config=model_config,
         allow_embedding_space_mismatch=allow_embedding_space_mismatch,
-        run_id=run_id or _default_run_id("btc-kis"),
+        run_id=run_id or default_run_id("btc-kis"),
         query_source_path=_common_query_dir(queries),
         query_source_count=len(queries),
     )
@@ -180,7 +175,7 @@ def run_btc_qa_prediction(
         window_max_gap=None,
         model_config=model_config,
         allow_embedding_space_mismatch=allow_embedding_space_mismatch,
-        run_id=run_id or _default_run_id("btc-qa"),
+        run_id=run_id or default_run_id("btc-qa"),
         generate_answer=generate_answer,
         answer_top_n=answer_top_n,
         answer_device=answer_device,
@@ -243,7 +238,7 @@ def run_btc_trake_prediction(
         window_max_gap=window_max_gap,
         model_config=model_config,
         allow_embedding_space_mismatch=allow_embedding_space_mismatch,
-        run_id=run_id or _default_run_id("btc-trake"),
+        run_id=run_id or default_run_id("btc-trake"),
         query_source_path=_common_query_dir(queries),
         query_source_count=len(queries),
     )

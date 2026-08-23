@@ -632,116 +632,6 @@ answer or no evidence. When the official format is published, only
 `qa_submission.py` and its tests change; the artifact contract above is
 independent of the submission layout.
 
-## Caption artifact contract (`aic2026.caption_generation`)
-
-The caption stage (`src/aic2026/caption_generation.py`) augments canonical
-keyframes with model-generated textual captions. Two backends are selectable:
-`qwen2.5-vl` (Transformers + Torch, default, any supported device) and
-`jina-vlm-mlx` (MLX `mlx-vlm`, Apple Silicon / Metal only, ~2 GB 4-bit
-weights). Both produce identical
-artifact schemas, and share the same resumable, row-ordered pipeline. It
-reads a canonical keyframe artifact (`frames.ndjson` + the materialized
-`images/<video_id>/<ordinal:06d>.jpg` collection) and never modifies it.
-
-### Purpose and flow
-
-```text
-keyframe artifact (frames.ndjson + images/)
-        |
-        v
-generate_captions  ->  Qwen2.5-VL  |  Jina VLM MLX
-        |              (--backend qwen2.5-vl|jina-vlm-mlx)
-        |              batched, resumable, row-ordered
-        v
-caption artifact directory: manifest.json + captions.ndjson
-        |
-        v
-(future) caption embedding / retrieval fusion stage
-```
-
-### Artifact layout
-
-One directory produced by `generate_captions`:
-
-- `manifest.json`: one JSON object with the metadata below (written atomically
-  only on completion).
-- `captions.ndjson`: one `KeyframeCaption` object per keyframe, in row order.
-- `checkpoint.json`: resume state; present only while the build is incomplete
-  (deleted once `manifest.json` is written).
-
-An interrupted run never exposes a `manifest.json`; a resumed run revalidates
-identity (model, checkpoint, prompt, source, total records) before continuing
-and skips already-captioned records.
-
-### Row-order contract
-
-Row `i` of `captions.ndjson` corresponds to line `i` of the source
-`frames.ndjson`. Row order is deterministic: source file order. This is the
-stable lookup key downstream stages rely on.
-
-### `manifest.json` fields
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `schema_version` | string | must equal `CAPTION_ARTIFACT_SCHEMA_VERSION = "1.0"` |
-| `artifact_id` | string | the output directory name (run identity) |
-| `model` | string | captioner model identity, e.g. `qwen2.5-vl:Qwen2.5-VL-3B-Instruct` or `jina-vlm-mlx:jinaai/jina-vlm-mlx` |
-| `checkpoint` | string | HuggingFace checkpoint id, e.g. `Qwen/Qwen2.5-VL-3B-Instruct` or `jinaai/jina-vlm-mlx` |
-| `device` | string | concrete runtime device |
-| `batch_size` | int | records per captioner invocation (`>= 1`) |
-| `prompt` | string | the exact caption prompt used |
-| `source_frames` | string | resolved source `frames.ndjson` path |
-| `num_records` | int | number `N` of caption records |
-| `num_videos` | int | number of distinct videos covered |
-| `num_failed` | int | records with `status == "error"` (`0..num_records`) |
-| `canonical_schema_version` | string | canonical schema version of the source frames |
-| `created_at` | string | ISO-8601 UTC completion timestamp |
-
-### `captions.ndjson` per-line schema
-
-Each line is one `KeyframeCaption`:
-
-- `video_id`: canonical `{value: "L25_V085"}` video identity.
-- `keyframe_ordinal`: 1-based keyframe ordinal within the video.
-- `frame_index`: 0-based keyframe index in the original video.
-- `caption`: the generated caption text; empty on failure.
-- `status`: `ok` or `error`.
-- `error`: `null` on success, otherwise a human-readable failure message.
-
-Row alignment is always preserved: a missing or corrupted image yields an
-`error` record (empty caption) instead of dropping the row, so indexes stay
-stable.
-
-### Build behavior
-
-- Deterministic input order: source `frames.ndjson` file order.
-- Resumable via `checkpoint.json`; already-captioned records are skipped on
-  resume and the artifact is complete only after `manifest.json` is written
-  atomically (the checkpoint is then deleted).
-- Graceful degradation: image load failures become `error` records; a failed
-  batch captioning call falls back to per-image captioning.
-- The keyframe artifact is read-only: this stage never writes back into the
-  source directory.
-
-### Public API
-
-- `generate_captions(keyframes_dir, output_dir, *, backend="qwen2.5-vl",
-  model=None, batch_size, device, resume, max_records, stop_after_records,
-  progress, captioner, image_loader, prompt) -> CaptionManifest`
-- `KeyframeCaption` / `CaptionManifest` / `CaptionCheckpoint` (typed
-  serializable records, `to_dict`/`from_dict`)
-- `read_caption_artifact(artifact_dir)` / `validate_caption_artifact(manifest,
-  artifact_dir)`
-- `Qwen25VlCaptioner` and `JinaVlmMlxCaptioner` (lazy
-  optional dependencies); `create_captioner(backend, ...)` factory
-
-### Relationship to later stages
-
-Captions are intended as input for a future caption-embedding / retrieval
-fusion stage. That stage consumes this artifact through its contract, not by
-inspecting the caption pipeline internals. The embedding/index contracts are
-unaffected.
-
 ## OCR artifact contract (`aic2026.ocr_generation`)
 
 The OCR stage (`src/aic2026/ocr_generation.py`) augments canonical keyframes
@@ -856,6 +746,6 @@ stable.
 
 OCR text is intended as input for a future OCR-text embedding / BM25 /
 retrieval-fusion stage that consumes this artifact through its contract, not
-by inspecting the OCR pipeline internals. The caption, embedding, and index
+by inspecting the OCR pipeline internals. The embedding and index
 contracts are unaffected. OCR is another modality artifact, not a replacement
 for visual (CLIP) retrieval.

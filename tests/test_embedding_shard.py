@@ -20,10 +20,10 @@ from aic2026.embedding_shard import (
     ShardEmbeddingError,
     ShardManifest,
     embed_shard,
-    keyframe_image_path,
     read_frames,
     select_frames,
 )
+from aic2026.frame_images import find_keyframe_image as keyframe_image_path
 
 #: video_id -> (ordinals) in the synthetic shard input order.
 LAYOUT = [("L21_V001", [1, 2, 3]), ("L21_V002", [1, 2]), ("L22_V001", [1])]

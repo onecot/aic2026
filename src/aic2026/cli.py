@@ -29,7 +29,6 @@ from aic2026.kis_prediction_runner import (
     KisPredictionRunnerConfig,
     run_kis_prediction,
 )
-from aic2026.model_backends.openclip import OpenClipEncoder
 from aic2026.qa.qa_prediction_runner import QaPredictionRunnerConfig, read_qa_artifact, run_qa_prediction
 from aic2026.qa.qa_submission import write_qa_submission_csv
 from aic2026.trake import TrakePredictionRunnerConfig, run_trake_prediction
@@ -527,22 +526,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "predict-kis":
         config = load_config(args.config)
         try:
-            encoder = OpenClipEncoder(config.openclip)
+            encoder = create_text_encoder(config)
             artifact = run_kis_prediction(
                 KisPredictionRunnerConfig(
                     evaluation_set_path=args.evaluation_set,
                     index_artifact_dir=args.index_artifact,
                     prediction_output_path=args.output,
-                    model_config={
-                        "backend": config.openclip.backend,
-                        "model_name": config.openclip.model_name,
-                        "pretrained": config.openclip.pretrained,
-                        "device": config.openclip.device,
-                        "precision": config.openclip.precision,
-                        "normalization": config.openclip.normalization,
-                        "preprocessing_id": config.openclip.preprocessing_id,
-                        "tokenizer_id": config.openclip.tokenizer_id,
-                    },
+                    model_config=config.model_config,
                     top_k=args.top_k,
                     query_text_field=args.query_text_field,
                     query_subset_ids=tuple(args.query_ids) if args.query_ids else None,

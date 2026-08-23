@@ -6,7 +6,9 @@ retrieval, KIS prediction, and KIS evaluation.
 
 For the full developer guide (per-stage Python API and CLI usage), see
 [`docs/usage.md`](docs/usage.md). Artifact schemas and data contracts are
-documented in [`docs/data-contracts.md`](docs/data-contracts.md).
+documented in [`docs/data-contracts.md`](docs/data-contracts.md). The
+minimal HTTP API for retrieval and frame navigation is documented in
+[`docs/api.md`](docs/api.md).
 
 ## Setup
 
@@ -38,34 +40,27 @@ pytest
 Default configuration lives in `configs/default.yaml`. Experiment-specific
 overrides and CLI flags will be layered on top of it as the pipeline evolves.
 
-## OpenCLIP encoder backend
+## Encoder backends (Jina CLIP v2 is the production default)
 
-The optional OpenCLIP backend implements the shared `EmbeddingEncoder`
-contract without making the core package depend on model libraries. Install
-its runtime dependencies when encoding is needed:
-
-```bash
-pip install -e ".[openclip]"
-```
-
-`configs/default.yaml` provides the `models.openclip` configuration block:
-model name, pretrained checkpoint, `auto`/`cpu`/`mps`/`cuda` device,
-`fp32`/`fp16` output precision, normalization, and explicit preprocessing /
-tokenizer revision identifiers. Instantiate it from application code with:
+The active model section in `configs/default.yaml` is `models.jina`
+(`jina-clip-v2`), matching the production retrieval stack and the
+`data/interim/indexes/jina-v2-full` index. The simplest way to build an
+encoder for the active model is:
 
 ```python
 from aic2026.config import load_config
-from aic2026.model_backends.openclip import OpenClipEncoder
+from aic2026.image_embedder import create_text_encoder
 
-encoder = OpenClipEncoder(load_config().openclip)
+encoder = create_text_encoder(load_config())
 text_embedding = encoder.encode_text("example query")
-image_embedding = encoder.encode_image(image)
 ```
 
-`encode_text_batch` and `encode_image_batch` support batches. Both image and
-text methods use the same configured normalization convention and return
-compatible `EmbeddingSpace` metadata. Model weights may be downloaded by
-OpenCLIP on first use; normal tests do not load a model or access the network.
+The optional OpenCLIP backend remains available as a baseline; install its
+runtime dependencies with `pip install -e ".[openclip]"` and instantiate it
+explicitly via `aic2026.model_backends.openclip.OpenClipEncoder`. Both
+backends implement the shared `EmbeddingEncoder` contract and record full
+`EmbeddingSpace` metadata, so artifacts built with different models are never
+silently mixed.
 
 ## Dataset inspection
 

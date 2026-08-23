@@ -5,8 +5,15 @@
 #         -> environment or experiment configuration
 #         -> explicit CLI overrides
 #
-# Processing stages and experiment parameters will be added here
-# as the pipeline is implemented.
+# The ACTIVE model section is ``models.jina`` (jina-clip-v2). It matches the
+# production retrieval stack: query encoding against the
+# ``data/interim/indexes/jina-v2-full`` index built from the
+# ``outputs/embeddings_jina_v2`` embedding artifact. The full embedding space
+# identity is recorded in every embedding/index/prediction artifact, so
+# artifacts built with a different model are never silently mixed.
+#
+# ``models.openclip`` is retained only as an optional baseline backend; it is
+# NOT the default for prediction runs.
 
 project:
   name: aic2026
@@ -24,6 +31,17 @@ data:
   keyframes_dir: data/keyframes/adaptive_sbd_v1
 
 models:
+  jina:
+    backend: jina-clip
+    model_name: jina-clip-v2
+    pretrained: jinaai/jina-clip-v2
+    device: auto
+    precision: fp32
+    normalization: l2
+    # Project-managed processing/tokenizer revision labels; bump them when
+    # changing the convention for an otherwise identical model/checkpoint.
+    preprocessing_id: jina-clip-v2-preprocess-v1
+    tokenizer_id: jina-clip-v2-tokenizer-v1
   openclip:
     backend: openclip
     model_name: ViT-B-32
@@ -31,7 +49,5 @@ models:
     device: auto
     precision: fp32
     normalization: l2
-    # These are explicit run metadata. Update when changing the processing
-    # or tokenizer convention for an otherwise identical model/checkpoint.
     preprocessing_id: openclip-default-v1
     tokenizer_id: openclip-default-v1

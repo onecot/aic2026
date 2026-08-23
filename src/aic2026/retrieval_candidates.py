@@ -48,9 +48,12 @@ that compose :func:`group_candidates_by_video`, :func:`group_windows`, and
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import fsum
-from typing import Literal, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
+
+if TYPE_CHECKING:
+    from aic2026.retrieval import RetrievalCandidate
 
 
 @runtime_checkable
@@ -355,6 +358,53 @@ def group_windows(
         previous = index
     windows.append((start, previous))
     return windows
+
+
+def build_window_candidates(
+    frames_by_video: dict[str, list[RetrievalCandidate]],
+    max_gap: int | None,
+) -> tuple[WindowCandidate, ...]:
+    """Group each video's retrieved frames into ranked temporal windows.
+
+    One candidate frame set per video is grouped by
+    :func:`group_windows`; every resulting window scores as the maximum
+    score of its frames and windows are ranked by score (best first,
+    stable). This is the single shared implementation used by both QA
+    evidence shaping and TRAKE event windows.
+
+    Expected input:
+        - frames_by_video: frame candidates grouped by video id (see
+          :func:`group_candidates_by_video`).
+        - max_gap: maximum frame-index distance inside one window;
+          ``None`` disables window generation (empty result).
+
+    Returns:
+        - Window candidates ranked by score; empty when disabled or when
+          there are no candidates.
+
+    Raises:
+        - No exceptions beyond :func:`group_windows` validation.
+    """
+    if max_gap is None or not frames_by_video:
+        return ()
+    windows: list[WindowCandidate] = []
+    for video_id, frames in frames_by_video.items():
+        by_index = sorted(frames, key=lambda candidate: candidate.frame_index)
+        indices = [candidate.frame_index for candidate in by_index]
+        for start, end in group_windows(indices, max_gap):
+            in_window = [candidate for candidate in by_index if start <= candidate.frame_index <= end]
+            score = max(float(candidate.score) for candidate in in_window)
+            windows.append(
+                WindowCandidate(
+                    video_id=video_id,
+                    frame_start=start,
+                    frame_end=end,
+                    score=score,
+                    rank=1,
+                )
+            )
+    ranked = sort_by_score(windows)
+    return tuple(replace(window, rank=rank) for rank, window in enumerate(ranked, start=1))
 
 
 def _top_frame_index(group: Sequence[FrameScoredCandidate]) -> int:

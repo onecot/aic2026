@@ -14,22 +14,24 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_submission import (
+from aic2026.btc_queries import (
+    QueryFileInfo,
+    enumerate_query_files,
+    normalize_query_text,
+    parse_query_filename,
+    read_query_text,
+)
+from aic2026.submission import (
+    KIS_MAX_ROWS,
     QA_ANSWER_MAX_CHARS,
     QA_MAX_ROWS,
-    KIS_MAX_ROWS,
     TRAKE_MAX_ROWS,
-    QueryFileInfo,
     QueryMatchError,
     create_submission_zip,
-    enumerate_query_files,
     export_kis_csv,
     export_qa_csv,
     export_trake_csv,
     find_unique_match,
-    normalize_query_text,
-    parse_query_filename,
-    read_query_text,
     select_trake_rows,
     _validate_kis_rows,
     _validate_qa_rows,
@@ -370,7 +372,7 @@ class TestKisCsv:
     def test_no_mp4_suffix(self, tmp_path: Path) -> None:
         # Test the validation directly since RankedKisPrediction rejects
         # non-canonical video_id values.  The mp4 check is on the CSV rows.
-        from scripts.build_submission import _validate_kis_rows
+        from aic2026.submission import _validate_kis_rows
         with pytest.raises(ValueError, match="must not end with .mp4"):
             _validate_kis_rows([["video.mp4", "0"]])
 
@@ -427,7 +429,7 @@ class TestQaCsv:
         assert rows[0][0] != "query_id"
 
     def test_no_mp4_suffix(self, tmp_path: Path) -> None:
-        from scripts.build_submission import _validate_qa_rows
+        from aic2026.submission import _validate_qa_rows
         with pytest.raises(ValueError, match="must not end with .mp4"):
             _validate_qa_rows([["L21_V001.mp4", "10", "answer"]])
 
@@ -580,7 +582,7 @@ class TestZipStructure:
 
 class TestEndToEndSubmission:
     def test_full_synthetic_build(self, tmp_path: Path) -> None:
-        from scripts.build_submission import build_submission
+        from aic2026.submission import build_submission
 
         # Create query files
         query_dir = tmp_path / "queries"

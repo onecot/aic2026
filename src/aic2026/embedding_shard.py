@@ -45,12 +45,9 @@ from aic2026.canonical import KeyframeTiming
 from aic2026.embedding_artifact import iter_frames
 from aic2026.embedding_runner import default_image_loader
 from aic2026.embeddings import EmbeddingSpace
+from aic2026.frame_images import find_keyframe_image
 from aic2026.image_embedder import ImageEmbedder
-from aic2026.keyframe_materialize import (
-    IMAGE_EXTENSION,
-    IMAGES_DIRNAME,
-    image_filename,
-)
+from aic2026.keyframe_materialize import IMAGE_EXTENSION
 from aic2026.progress import ProgressReporter, create_progress_reporter
 
 #: Schema version of the shard manifest.
@@ -341,54 +338,6 @@ def select_frames(
     if not isinstance(max_frames, int) or isinstance(max_frames, bool) or max_frames < 0:
         raise ValueError(f"max_frames must be a non-negative integer, got {max_frames!r}")
     return list(frames[:max_frames])
-
-
-def keyframe_image_path(
-    keyframes_root: Path | str,
-    video_id: str,
-    keyframe_ordinal: int,
-) -> Path:
-    """Resolve the keyframe image path for one record.
-
-    Prefers the materialized ``images/`` collection (``adaptive_sbd_v1``
-    artifact: ``images/<video_id>/<ordinal:06d>.jpg``) and falls back to the
-    legacy BTC-style ``keyframes/<video_id>/<ordinal:03d>.jpg`` layout when the
-    ``images/`` directory is absent. Mirrors the dataset accessor without
-    depending on the full raw dataset root, so a shard worker only needs the
-    keyframes collection.
-
-    Expected input:
-        - keyframes_root: root directory containing either an ``images/``
-          collection or a legacy ``keyframes/`` collection.
-        - video_id: the ``L*_V*`` id.
-        - keyframe_ordinal: the 1-based keyframe ordinal.
-
-    Returns:
-        - The image file path for that keyframe.
-
-    Raises:
-        - ValueError: if ``keyframe_ordinal`` is not a positive integer.
-        - FileNotFoundError: if no keyframe image exists for the ordinal.
-    """
-    if not isinstance(keyframe_ordinal, int) or isinstance(keyframe_ordinal, bool) or keyframe_ordinal < 1:
-        raise ValueError(f"keyframe_ordinal must be a positive integer, got {keyframe_ordinal!r}")
-    root = Path(keyframes_root)
-    materialized = root / IMAGES_DIRNAME / video_id / image_filename(keyframe_ordinal)
-    if materialized.is_file():
-        return materialized
-    if (root / IMAGES_DIRNAME).is_dir():
-        raise FileNotFoundError(
-            f"keyframe image missing for {video_id} ordinal {keyframe_ordinal}: "
-            f"{materialized}"
-        )
-    directory = root / "keyframes" / video_id
-    for extension in ("jpg", "jpeg", "png"):
-        candidate = directory / f"{keyframe_ordinal:03d}.{extension}"
-        if candidate.is_file():
-            return candidate
-    raise FileNotFoundError(
-        f"keyframe image missing for {video_id} ordinal {keyframe_ordinal}: {directory}"
-    )
 
 
 def _frames_line_count(path: Path) -> int:
@@ -694,7 +643,7 @@ def embed_shard(
                     f"interrupted shard at row {next_row}; checkpoint written to {checkpoint_path}"
                 )
             with stages.time("load_images"):
-                path = keyframe_image_path(
+                path = find_keyframe_image(
                     keyframes_root, frame.keyframe.video_id.value, frame.keyframe.keyframe_ordinal
                 )
                 pending_images.append(load_image(path))

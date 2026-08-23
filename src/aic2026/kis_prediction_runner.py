@@ -13,21 +13,24 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-import numpy as np
-
-from aic2026.embeddings import EmbeddingEncoder, EmbeddingSpace, validate_query_compatibility
+from aic2026.embeddings import EmbeddingEncoder
 from aic2026.evaluation import EvaluationQuery, EvaluationTask, load_eval_set
-from aic2026.index_artifact import IndexManifest
 from aic2026.kis_scoring import KisPrediction
-from aic2026.retrieval import IndexRetriever, RetrievalCandidate
+from aic2026.search import SearchEngine
+from aic2026.task_support import (
+    QueryTextField,
+    default_run_id,
+    resolve_query_text_field,
+    utc_now_iso,
+    validate_query_text_field,
+)
 from aic2026.text_query import TextQuery
 
+
 KIS_PREDICTION_SCHEMA_VERSION = "1.0"
-QueryTextField = Literal["query_text_vi", "query_text_en"]
 
 
 @dataclass(frozen=True)
@@ -284,7 +287,7 @@ def run_kis_prediction(
     queries = tuple(
         TextQuery(
             query_id=query.query_id,
-            query_text=_resolve_query_text(
+            query_text=resolve_query_text_field(
                 query.query_text_vi, query.query_text_en, config.query_text_field
             ),
         )
@@ -362,51 +365,126 @@ def run_kis_prediction_for_queries(
     if len(queries) > query_source_count:
         raise ValueError("query_source_count must be >= the number of queries")
 
-    retriever = IndexRetriever(index_artifact_dir)
-    spaces_compatible = encoder.embedding_space.is_compatible_with(retriever.manifest.embedding_space)
-    override_used = False
-    if not spaces_compatible:
-        if not allow_embedding_space_mismatch:
-            _require_compatible_spaces(encoder.embedding_space, retriever.manifest)
-        override_used = True
-
-    results: list[QueryPredictionResult] = []
-    for query in queries:
-        query_embedding = encoder.encode_text(query.query_text)
-        retrieval = _search_candidates(
-            retriever=retriever,
-            query_embedding=query_embedding,
+    artifact = compute_kis_artifact(
+        queries,
+        engine=SearchEngine.from_parts(
+            encoder,
+            index_artifact_dir,
             top_k=top_k,
-            allow_mismatch=allow_embedding_space_mismatch,
-        )
-        results.append(
-            QueryPredictionResult(
-                query_id=query.query_id,
-                query_text=query.query_text,
-                predictions=tuple(_to_ranked_prediction(candidate) for candidate in retrieval),
-            )
-        )
+            allow_embedding_space_mismatch=allow_embedding_space_mismatch,
+        ),
+        query_text_field=query_text_field,
+        model_config=model_config,
+        run_id=run_id,
+        query_source_path=query_source_path,
+        query_source_count=query_source_count,
+        selected_query_ids=selected_query_ids,
+    )
+    write_kis_prediction_artifact(prediction_output_path, artifact)
+    return artifact
 
-    artifact = KisPredictionArtifact(
+
+def search_kis(
+    engine: SearchEngine,
+    query: TextQuery | str,
+    *,
+    top_k: int | None = None,
+    query_id: str = "query",
+) -> QueryPredictionResult:
+    """Rank KIS candidates for one query entirely in memory.
+
+    This is the single-query entry point for interactive use (and the future
+    API layer): no evaluation CSV, no artifact writes.
+
+    Expected input:
+        - engine: a constructed :class:`aic2026.search.SearchEngine`.
+        - query: a :class:`~aic2026.text_query.TextQuery` or plain query
+          text (then ``query_id`` is used).
+        - top_k: optional per-call cutoff; defaults to the engine's.
+        - query_id: identifier used when ``query`` is plain text.
+
+    Returns:
+        - The ranked KIS result for the query.
+
+    Raises:
+        - ValueError: for invalid inputs or incompatible embedding spaces
+          under strict mode.
+    """
+    if isinstance(query, str):
+        query = TextQuery(query_id=query_id, query_text=query)
+    predictions = tuple(
+        RankedKisPrediction(
+            rank=candidate.rank,
+            video_id=candidate.video_id,
+            frame_index=candidate.frame_index,
+            score=float(candidate.score),
+        )
+        for candidate in engine.search_text(query.query_text, top_k=top_k)
+    )
+    return QueryPredictionResult(query_id=query.query_id, query_text=query.query_text, predictions=predictions)
+
+
+def compute_kis_artifact(
+    queries: tuple[TextQuery, ...],
+    *,
+    engine: SearchEngine,
+    query_text_field: QueryTextField = "query_text_vi",
+    model_config: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    query_source_path: Path | str,
+    query_source_count: int,
+    selected_query_ids: tuple[str, ...] | None = None,
+    top_k: int | None = None,
+) -> KisPredictionArtifact:
+    """Compute one KIS prediction artifact in memory without writing files.
+
+    Expected input:
+        - queries: at least one resolved text query, in processing order.
+        - engine: a constructed :class:`aic2026.search.SearchEngine`.
+        - query_text_field: provenance label recorded in the artifact.
+        - model_config: optional JSON-serializable model configuration.
+        - run_id: optional stable run id; auto-generated when omitted.
+        - query_source_path / query_source_count / selected_query_ids:
+          provenance of the query source (see ``run_kis_prediction_for_queries``).
+        - top_k: effective cutoff recorded in the artifact; defaults to the
+          engine's configured cutoff.
+
+    Returns:
+        - The typed KIS prediction artifact (not persisted).
+
+    Raises:
+        - ValueError: if there are no queries, the source count is invalid,
+          or embedding spaces mismatch under strict mode.
+    """
+    validate_query_text_field(query_text_field)
+    if not queries:
+        raise ValueError("queries must contain at least one KIS query")
+    if not isinstance(query_source_count, int) or isinstance(query_source_count, bool) or query_source_count < 1:
+        raise ValueError("query_source_count must be a positive integer")
+    if len(queries) > query_source_count:
+        raise ValueError("query_source_count must be >= the number of queries")
+    effective_top_k = engine.top_k if top_k is None else top_k
+
+    results = tuple(search_kis(engine, query, top_k=effective_top_k) for query in queries)
+
+    return KisPredictionArtifact(
         schema_version=KIS_PREDICTION_SCHEMA_VERSION,
-        run_id=run_id or _default_run_id(),
-        created_at=_utc_now_iso(),
+        run_id=run_id or default_run_id("kis"),
+        created_at=utc_now_iso(),
         evaluation_set_path=str(Path(query_source_path).resolve()),
         evaluation_set_query_count=query_source_count,
         processed_query_count=len(results),
         query_text_field=query_text_field,
-        top_k=top_k,
-        embedding_space_compatible=spaces_compatible,
-        embedding_space_override_used=override_used,
-        index_artifact_path=str(Path(index_artifact_dir).resolve()),
-        index_manifest=retriever.manifest.to_dict(),
-        model_embedding_space=encoder.embedding_space.to_dict(),
+        top_k=effective_top_k,
+        embedding_space_compatible=engine.spaces_compatible,
+        embedding_space_override_used=engine.override_used,
+        index_artifact_path=str(Path(engine.retriever.artifact_dir).resolve()),
+        index_manifest=engine.manifest.to_dict(),
+        model_embedding_space=engine.embedding_space.to_dict(),
         model_config=model_config,
         selected_query_ids=selected_query_ids,
-        query_results=tuple(results),
+        query_results=results,
     )
-    write_kis_prediction_artifact(prediction_output_path, artifact)
-    return artifact
 
 
 def write_kis_prediction_artifact(path: Path | str, artifact: KisPredictionArtifact) -> None:
@@ -462,91 +540,3 @@ def _select_queries(
     if not selected:
         raise ValueError("query_subset_ids selected no queries")
     return selected
-
-
-def _resolve_query_text(query_text_vi: str, query_text_en: str | None, field: QueryTextField) -> str:
-    """Select and validate one query text field from a canonical query."""
-    if field == "query_text_vi":
-        return query_text_vi
-    if query_text_en is None:
-        raise ValueError("query_text_en was requested but is missing for at least one query")
-    return query_text_en
-
-
-def _require_compatible_spaces(model_space: EmbeddingSpace, manifest: IndexManifest) -> None:
-    """Require model/index embedding spaces to be compatible.
-
-    Uses :meth:`EmbeddingSpace.is_compatible_with`, matching the QA and
-    TRAKE runners: build-environment-only ``model_version`` differences are
-    ignored, while every comparison-relevant field must match.
-    """
-    index_space = manifest.embedding_space
-    if index_space is None:
-        raise ValueError("index artifact is missing embedding-space metadata")
-    if not model_space.is_compatible_with(index_space):
-        raise ValueError(
-            "incompatible embedding spaces between encoder and index: "
-            f"model {model_space.space_id!r} ({model_space.backend}/{model_space.model_id}) != "
-            f"index {index_space.space_id!r} ({index_space.backend}/{index_space.model_id})"
-        )
-
-
-def _to_ranked_prediction(candidate: RetrievalCandidate) -> RankedKisPrediction:
-    """Convert one retrieval candidate to a persisted KIS prediction record."""
-    return RankedKisPrediction(
-        rank=candidate.rank,
-        video_id=candidate.video_id,
-        frame_index=candidate.frame_index,
-        score=candidate.score,
-    )
-
-
-def _search_candidates(
-    retriever: IndexRetriever,
-    query_embedding: Any,
-    top_k: int,
-    allow_mismatch: bool,
-) -> list[RetrievalCandidate]:
-    """Run retrieval under strict mode or explicit mismatch override.
-
-    Expected input:
-        - retriever: loaded index retriever.
-        - query_embedding: text embedding generated by the encoder.
-        - top_k: retrieval cutoff.
-        - allow_mismatch: explicit override gate.
-
-    Returns:
-        - Ranked retrieval candidates.
-
-    Raises:
-        - ValueError: for incompatible spaces under strict mode, or when
-          override is requested for a non-legacy index that cannot accept
-          raw vectors by contract.
-    """
-    if not allow_mismatch:
-        validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
-        return retriever.search(query_embedding, top_k=top_k)
-
-    if query_embedding.space.is_compatible_with(retriever.manifest.embedding_space):
-        return retriever.search(query_embedding, top_k=top_k)
-
-    index_space = retriever.manifest.embedding_space
-    if index_space is None:
-        raise ValueError("index artifact is missing embedding-space metadata")
-    if index_space.backend != "legacy":
-        raise ValueError(
-            "embedding-space mismatch override is only supported for legacy indexes; "
-            f"index backend is {index_space.backend!r}"
-        )
-    query_vector = np.asarray(query_embedding.vector)
-    return retriever.search(query_vector, top_k=top_k)
-
-
-def _default_run_id() -> str:
-    """Return a deterministic-format run id for artifact provenance."""
-    return f"kis-run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-
-
-def _utc_now_iso() -> str:
-    """Return an ISO-8601 UTC timestamp with explicit Z suffix."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

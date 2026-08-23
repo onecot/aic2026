@@ -31,18 +31,20 @@ from pathlib import Path
 from re import MULTILINE, compile
 from typing import Any
 
-import numpy as np
-
-from aic2026.embeddings import EmbeddingEncoder, EmbeddingSpace, validate_query_compatibility
+from aic2026.embeddings import EmbeddingEncoder
 from aic2026.evaluation import EvaluationQuery, EvaluationSet, EvaluationTask, load_eval_set
-from aic2026.index_artifact import IndexManifest
 from aic2026.qa.qa_types import QueryTextField
-from aic2026.retrieval import IndexRetriever, RetrievalCandidate
+from aic2026.retrieval import RetrievalCandidate
 from aic2026.retrieval_candidates import (
     WindowCandidate,
+    build_window_candidates,
     group_candidates_by_video,
-    group_windows,
-    sort_by_score,
+)
+from aic2026.search import SearchEngine
+from aic2026.task_support import (
+    default_run_id,
+    resolve_query_text_field,
+    utc_now_iso,
 )
 from aic2026.text_query import TextQuery
 
@@ -496,7 +498,7 @@ def run_trake_prediction(
 
     selected = select_trake_queries(evaluation_set, config.query_subset_ids)
     queries = tuple(
-        TextQuery(query_id=query.query_id, query_text=_resolve_query_text(query, config.query_text_field))
+        TextQuery(query_id=query.query_id, query_text=resolve_query_text_field(query.query_text_vi, query.query_text_en, config.query_text_field))
         for query in selected
     )
     return run_trake_prediction_for_queries(
@@ -575,48 +577,34 @@ def run_trake_prediction_for_queries(
     if len(queries) > query_source_count:
         raise ValueError("query_source_count must be >= the number of queries")
 
-    retriever = IndexRetriever(index_artifact_dir)
-    spaces_compatible = encoder.embedding_space.is_compatible_with(retriever.manifest.embedding_space)
-    override_used = False
-    if not spaces_compatible:
-        if not allow_embedding_space_mismatch:
-            _require_compatible_spaces(encoder.embedding_space, retriever.manifest)
-        override_used = True
-
+    engine = SearchEngine.from_parts(
+        encoder,
+        index_artifact_dir,
+        top_k=top_k,
+        allow_embedding_space_mismatch=allow_embedding_space_mismatch,
+    )
     results: list[TrakeQueryResult] = []
     for query in queries:
-        events = parse_events(query.query_text)
-        event_results = [
-            _retrieve_event(
-                retriever=retriever,
-                event=event,
-                top_k=top_k,
-                window_max_gap=window_max_gap,
-                allow_mismatch=allow_embedding_space_mismatch,
-                encoder=encoder,
-            )
-            for event in events
-        ]
         results.append(
-            TrakeQueryResult(query_id=query.query_id, query_text=query.query_text, events=tuple(event_results))
+            search_trake(engine, query, top_k=top_k, window_max_gap=window_max_gap)
         )
 
     artifact = TrakePredictionArtifact(
         manifest=TrakePredictionManifest(
             schema_version=TRAKE_PREDICTION_SCHEMA_VERSION,
-            run_id=run_id or _default_run_id(),
-            created_at=_utc_now_iso(),
+            run_id=run_id or default_run_id("trake"),
+            created_at=utc_now_iso(),
             evaluation_set_path=str(Path(query_source_path).resolve()),
             evaluation_set_query_count=query_source_count,
             processed_query_count=len(results),
             query_text_field=query_text_field,
             top_k=top_k,
             window_max_gap=window_max_gap,
-            embedding_space_compatible=spaces_compatible,
-            embedding_space_override_used=override_used,
-            index_artifact_path=str(Path(index_artifact_dir).resolve()),
-            index_manifest=retriever.manifest.to_dict(),
-            model_embedding_space=encoder.embedding_space.to_dict(),
+            embedding_space_compatible=engine.spaces_compatible,
+            embedding_space_override_used=engine.override_used,
+            index_artifact_path=str(Path(engine.retriever.artifact_dir).resolve()),
+            index_manifest=engine.manifest.to_dict(),
+            model_embedding_space=engine.embedding_space.to_dict(),
             model_config=model_config,
             selected_query_ids=selected_query_ids,
         ),
@@ -626,11 +614,57 @@ def run_trake_prediction_for_queries(
     return artifact
 
 
+def search_trake(
+    engine: SearchEngine,
+    query: TextQuery | str,
+    *,
+    top_k: int | None = None,
+    window_max_gap: int | None = 60,
+    query_id: str = "query",
+) -> TrakeQueryResult:
+    """Compute one TRAKE query's per-event evidence entirely in memory.
+
+    This is the single-query entry point for interactive use: no evaluation
+    CSV and no artifact writes. Events are parsed from the query text; each
+    event runs an independent retrieval over the engine's index and gets its
+    own ranked temporal windows.
+
+    Expected input:
+        - engine: a constructed :class:`aic2026.search.SearchEngine`.
+        - query: a :class:`~aic2026.text_query.TextQuery` or plain text
+          containing an event list (``E<number>: text`` lines or a
+          ``(n) event ...`` numbered list).
+        - top_k: optional per-event cutoff; defaults to the engine's.
+        - window_max_gap: temporal window grouping gap; ``None`` disables
+          window candidates.
+        - query_id: identifier used when ``query`` is plain text.
+
+    Returns:
+        - The typed TRAKE result with per-event candidates and windows.
+
+    Raises:
+        - ValueError: if events cannot be parsed, inputs are invalid, or
+          embedding spaces mismatch under strict mode.
+    """
+    if isinstance(query, str):
+        query = TextQuery(query_id=query_id, query_text=query)
+    events = parse_events(query.query_text)
+    event_results = [
+        _retrieve_event(engine=engine, event=event, top_k=top_k, window_max_gap=window_max_gap)
+        for event in events
+    ]
+    return TrakeQueryResult(query_id=query.query_id, query_text=query.query_text, events=tuple(event_results))
+
+
 def build_event_windows(
     retrieval: Sequence[RetrievalCandidate],
     max_gap: int | None,
 ) -> tuple[WindowCandidate, ...]:
     """Group one event's retrieved frames into ranked temporal windows.
+
+    Thin task-level wrapper over
+    :func:`aic2026.retrieval_candidates.build_window_candidates`, the single
+    shared window implementation used by QA and TRAKE.
 
     Expected input:
         - retrieval: ranked frame-level retrieval candidates for one event.
@@ -638,33 +672,13 @@ def build_event_windows(
           disables window generation.
 
     Returns:
-        - Window candidates ranked by score (best window first), using
-          :func:`aic2026.retrieval_candidates.group_windows` per video; empty
-          when disabled or when there are no candidates.
+        - Window candidates ranked by score (best window first); empty when
+          disabled or when there are no candidates.
 
     Raises:
         - No exceptions.
     """
-    if max_gap is None:
-        return ()
-    windows: list[WindowCandidate] = []
-    for video_id, frames in group_candidates_by_video(retrieval).items():
-        by_index = sorted(frames, key=lambda candidate: candidate.frame_index)
-        indices = [candidate.frame_index for candidate in by_index]
-        for start, end in group_windows(indices, max_gap):
-            in_window = [candidate for candidate in by_index if start <= candidate.frame_index <= end]
-            score = max(float(candidate.score) for candidate in in_window)
-            windows.append(
-                WindowCandidate(
-                    video_id=video_id,
-                    frame_start=start,
-                    frame_end=end,
-                    score=score,
-                    rank=1,
-                )
-            )
-    ranked = sort_by_score(windows)
-    return tuple(replace(window, rank=rank) for rank, window in enumerate(ranked, start=1))
+    return build_window_candidates(group_candidates_by_video(retrieval), max_gap)
 
 
 def write_trake_artifact(output_dir: Path | str, artifact: TrakePredictionArtifact) -> None:
@@ -748,73 +762,20 @@ def _clean_event_text(raw: str) -> str:
 
 
 def _retrieve_event(
-    retriever: IndexRetriever,
+    engine: SearchEngine,
     event: TrakeEvent,
-    top_k: int,
+    top_k: int | None,
     window_max_gap: int | None,
-    allow_mismatch: bool,
-    encoder: EmbeddingEncoder,
 ) -> TrakeEventResult:
     """Run one independent event-level retrieval and build its evidence."""
-    query_embedding = encoder.encode_text(event.event_text)
-    retrieval = _search_candidates(
-        retriever=retriever,
-        query_embedding=query_embedding,
-        top_k=top_k,
-        allow_mismatch=allow_mismatch,
-    )
-    windows = build_event_windows(retrieval, window_max_gap)
+    retrieval = engine.search_text(event.event_text, top_k=top_k)
+    windows = build_window_candidates(group_candidates_by_video(retrieval), window_max_gap)
     return TrakeEventResult(
         event_id=event.event_id,
         event_text=event.event_text,
         predictions=tuple(retrieval),
         windows=windows,
     )
-
-
-def _search_candidates(
-    retriever: IndexRetriever,
-    query_embedding: Any,
-    top_k: int,
-    allow_mismatch: bool,
-) -> list[RetrievalCandidate]:
-    """Run retrieval under strict mode or explicit mismatch override."""
-    if not allow_mismatch:
-        validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
-        return retriever.search(query_embedding, top_k=top_k)
-    if query_embedding.space.is_compatible_with(retriever.manifest.embedding_space):
-        return retriever.search(query_embedding, top_k=top_k)
-    index_space = retriever.manifest.embedding_space
-    if index_space is None:
-        raise ValueError("index artifact is missing embedding-space metadata")
-    if index_space.backend != "legacy":
-        raise ValueError(
-            "embedding-space mismatch override is only supported for legacy indexes; "
-            f"index backend is {index_space.backend!r}"
-        )
-    return retriever.search(np.asarray(query_embedding.vector), top_k=top_k)
-
-
-def _require_compatible_spaces(model_space: EmbeddingSpace, manifest: IndexManifest) -> None:
-    """Require model/index embedding spaces to match exactly."""
-    index_space = manifest.embedding_space
-    if index_space is None:
-        raise ValueError("index artifact is missing embedding-space metadata")
-    if not model_space.is_compatible_with(index_space):
-        raise ValueError(
-            "incompatible embedding spaces between encoder and index: "
-            f"model {model_space.space_id!r} ({model_space.backend}/{model_space.model_id}) != "
-            f"index {index_space.space_id!r} ({index_space.backend}/{index_space.model_id})"
-        )
-
-
-def _resolve_query_text(query: EvaluationQuery, field: QueryTextField) -> str:
-    """Resolve and validate one query text field from a canonical query."""
-    if field == "query_text_vi":
-        return query.query_text_vi
-    if query.query_text_en is None:
-        raise ValueError("query_text_en was requested but is missing for at least one query")
-    return query.query_text_en
 
 
 def _retrieval_candidate_to_dict(candidate: RetrievalCandidate) -> dict[str, Any]:
@@ -861,13 +822,3 @@ def _window_candidate_from_dict(data: dict[str, Any]) -> WindowCandidate:
         score=float(data["score"]),
         rank=int(data["rank"]),
     )
-
-
-def _default_run_id() -> str:
-    """Return a deterministic-format run id for artifact provenance."""
-    return f"trake-run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-
-
-def _utc_now_iso() -> str:
-    """Return an ISO-8601 UTC timestamp with explicit Z suffix."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

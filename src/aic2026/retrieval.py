@@ -58,8 +58,14 @@ class IndexRetriever:
 
     @property
     def manifest(self) -> IndexManifest:
-        """Return the validated manifest for the loaded artifact."""
+        """The validated index artifact manifest."""
         return self._manifest
+
+    @property
+    def artifact_dir(self) -> Path:
+        """The directory of the loaded index artifact."""
+        return self._artifact_dir
+
 
     def search(
         self, query_vector: Sequence[float] | np.ndarray | Embedding, top_k: int = 10

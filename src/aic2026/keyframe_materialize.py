@@ -20,7 +20,7 @@ Output artifact::
 
 Ordinal contract: the ``frames.ndjson`` record with ``keyframe_ordinal N``
 maps to ``images/<video_id>/<N:06d>.jpg``. This is the same key the embedder
-resolves via ``aic2026.embedding_shard.keyframe_image_path`` (new canonical
+resolves via ``aic2026.frame_images.find_keyframe_image`` (canonical
 layout, with a legacy ``keyframes/`` fallback).
 
 Behavior:

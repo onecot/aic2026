@@ -410,6 +410,7 @@ def test_keyframe_evidence_resolves_images_from_artifact(tmp_path: Path) -> None
 
 def test_default_answer_model_reuses_existing_jina_vlm() -> None:
     assert DEFAULT_ANSWER_MODEL == "jinaai/jina-vlm-mlx"
-    from aic2026.caption_generation import JinaVlmMlxCaptioner
+    from aic2026.vlm_jina import JinaVlmMlx
 
-    assert issubclass(JinaVlmAnswerGenerator, JinaVlmMlxCaptioner)
+    # The answer generator is built on the shared extracted VLM wrapper.
+    assert issubclass(JinaVlmAnswerGenerator, JinaVlmMlx)

@@ -64,7 +64,8 @@ from typing import Any
 from aic2026.canonical import CANONICAL_SCHEMA_VERSION, KeyframeTiming, VideoId
 from aic2026.embedding_artifact import FRAMES_FILENAME, iter_frames
 from aic2026.embedding_runner import default_image_loader
-from aic2026.embedding_shard import keyframe_image_path, select_frames
+from aic2026.frame_images import find_keyframe_image
+from aic2026.embedding_shard import select_frames
 from aic2026.progress import ProgressReporter, create_progress_reporter
 
 #: Schema version of the OCR artifact.
@@ -1276,7 +1277,7 @@ def generate_ocr(
                 load_error: str | None = None
                 image: object | None = None
                 try:
-                    path = keyframe_image_path(keyframes_dir, video_id, frame.keyframe.keyframe_ordinal)
+                    path = find_keyframe_image(keyframes_dir, video_id, frame.keyframe.keyframe_ordinal)
                     image = load_image(path)
                 except Exception as exc:  # noqa: BLE001 - recorded as an error record
                     load_error = f"{type(exc).__name__}: {exc}"

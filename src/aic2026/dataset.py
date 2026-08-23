@@ -58,6 +58,7 @@ from aic2026.entities import (
     parse_media_info,
     parse_object_detections,
 )
+from aic2026.frame_images import find_keyframe_image
 from aic2026.inspection import discover_video_ids
 
 
@@ -262,9 +263,9 @@ class Dataset:
     def keyframe_image_path(self, video_id: str, keyframe_ordinal: int) -> Path:
         """Return the raw image path for one keyframe.
 
-        The raw filename extension and zero-padding stay hidden behind this
-        accessor so consumers (e.g. embedding runners) never depend on the
-        raw ``keyframes/`` layout.
+        Delegates to the canonical resolver
+        (:func:`aic2026.frame_images.find_keyframe_image`); the raw filename
+        extension and zero-padding stay hidden behind this accessor.
 
         Expected input:
             - video_id: the ``L*_V*`` id.
@@ -280,21 +281,10 @@ class Dataset:
               ordinal.
         """
         self._require_valid_video_id(video_id)
-        if not isinstance(keyframe_ordinal, int) or keyframe_ordinal < 1:
-            raise ValueError(
-                f"keyframe_ordinal must be a positive integer, got {keyframe_ordinal!r}"
-            )
-        keyframes_dir = self._raw_root / "keyframes" / video_id
-        if not keyframes_dir.is_dir():
-            raise MissingRecordError(f"keyframes directory missing for {video_id}: {keyframes_dir}")
-        for extension in ("jpg", "jpeg", "png"):
-            candidate = keyframes_dir / f"{keyframe_ordinal:03d}.{extension}"
-            if candidate.is_file():
-                return candidate
-        raise MissingRecordError(
-            f"keyframe image missing for {video_id} ordinal {keyframe_ordinal}: "
-            f"{keyframes_dir}"
-        )
+        try:
+            return find_keyframe_image(self._raw_root, video_id, keyframe_ordinal)
+        except FileNotFoundError as exc:
+            raise MissingRecordError(str(exc)) from exc
 
     def iter_keyframes(self, video_id: str) -> Iterator[KeyframeKey]:
         """Yield one canonical :class:`KeyframeKey` per keyframe.

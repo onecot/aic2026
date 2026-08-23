@@ -2,10 +2,10 @@
 
 This module fills the empty ``answer`` of each :class:`QaQueryResult` produced
 by the retrieval foundation (:func:`aic2026.qa.qa_prediction_runner.run_qa_prediction`).
-It deliberately reuses the existing Jina VLM integration
-(:class:`aic2026.caption_generation.JinaVlmMlxCaptioner`, ``jinaai/jina-vlm-mlx``,
-the local-first MLX port of ``jinaai/jina-vlm``) instead of introducing a
-second VLM backend architecture.
+It reuses the shared Jina VLM wrapper
+(:class:`aic2026.vlm_jina.JinaVlmMlx`, ``jinaai/jina-vlm-mlx``, the local-first
+MLX port of ``jinaai/jina-vlm``) instead of introducing a second VLM backend
+architecture.
 
 Pipeline (per query):
 
@@ -32,20 +32,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from aic2026.caption_generation import JinaVlmMlxCaptioner
 from aic2026.embedding_artifact import FRAMES_FILENAME, iter_frames
 from aic2026.embedding_runner import default_image_loader
-from aic2026.embedding_shard import keyframe_image_path
+from aic2026.frame_images import find_keyframe_image
 from aic2026.qa.qa_types import QaPrediction, QaQueryResult
+from aic2026.vlm_jina import DEFAULT_JINA_VLM_MODEL, JinaVlmMlx
 
-#: Model checkpoint used for answer generation. Reuses the existing Jina VLM
-#: integration (``jinaai/jina-vlm-mlx``, the MLX port of ``jinaai/jina-vlm``)
-#: already shipped in :mod:`aic2026.caption_generation`.
-DEFAULT_ANSWER_MODEL = "jinaai/jina-vlm-mlx"
+#: Model checkpoint used for answer generation. Reuses the shared Jina VLM
+#: MLX wrapper (:mod:`aic2026.vlm_jina`, the MLX port of ``jinaai/jina-vlm``).
+DEFAULT_ANSWER_MODEL = DEFAULT_JINA_VLM_MODEL
 
 #: Default number of evidence frames passed to the Jina VLM per query.
 DEFAULT_ANSWER_TOP_N = 5
@@ -176,22 +174,23 @@ class KeyframeEvidence:
         ordinal = self.ordinal_for(video_id, frame_index)
         if ordinal is None:
             return None
-        candidate = keyframe_image_path(self._root, video_id, ordinal)
+        candidate = find_keyframe_image(self._root, video_id, ordinal)
         return candidate if candidate.is_file() else None
 
 
-class JinaVlmAnswerGenerator(JinaVlmMlxCaptioner):
-    """Jina VLM answer generator reusing the existing MLX Jina VLM backend.
+class JinaVlmAnswerGenerator(JinaVlmMlx):
+    """Jina VLM answer generator over the shared MLX wrapper.
 
     Loads the same ``jinaai/jina-vlm-mlx`` checkpoint, device handling, and
-    mlx-vlm runtime as :class:`JinaVlmMlxCaptioner`. The Jina VLM MLX
-    interface accepts one image per generation call, so multi-frame evidence
-    is answered per frame and then synthesized with a text-only call.
+    mlx-vlm runtime as :class:`aic2026.vlm_jina.JinaVlmMlx`. The Jina VLM
+    MLX interface accepts one image per generation call, so multi-frame
+    evidence is answered per frame and then synthesized with a text-only
+    call.
 
     Expected input:
         - model: Jina VLM checkpoint id (default ``jinaai/jina-vlm-mlx``).
         - device: ``auto`` or ``mps`` (MLX runs on Apple Silicon Metal;
-          ``cpu``/``cuda`` are rejected by the reused backend).
+          ``cpu``/``cuda`` are rejected by the shared wrapper).
         - prompt: the answer prompt passed to the model (defaults to
           :data:`QA_ANSWER_PROMPT`).
         - max_new_tokens: maximum generated tokens per VLM call.
@@ -205,12 +204,13 @@ class JinaVlmAnswerGenerator(JinaVlmMlxCaptioner):
         prompt: str = QA_ANSWER_PROMPT,
         max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     ) -> None:
-        super().__init__(model=model, device=device, prompt=prompt, max_new_tokens=max_new_tokens)
+        super().__init__(model, device=device, max_new_tokens=max_new_tokens)
+        self._prompt = prompt
 
     @property
-    def max_new_tokens(self) -> int:
-        """Maximum generated tokens per VLM call."""
-        return self._max_new_tokens
+    def prompt(self) -> str:
+        """The bound answer prompt."""
+        return self._prompt
 
     def generate_answer(self, question: str, images: Sequence[object]) -> str:
         """Answer a question from a sequence of evidence images.
@@ -238,36 +238,9 @@ class JinaVlmAnswerGenerator(JinaVlmMlxCaptioner):
             raise ValueError("generate_answer requires at least one evidence image")
         prompt_text = self._prompt.format(query=question)
         if len(images) == 1:
-            return self._generate(prompt_text, list(images))
-        observations = [self._generate(prompt_text, [image]) for image in images]
+            return self.generate(prompt_text, list(images))
+        observations = [self.generate(prompt_text, [image]) for image in images]
         return self._synthesize(question, observations)
-
-    def _generate(self, prompt_text: str, images: list[object]) -> str:
-        """Run one mlx-vlm generation call and extract the answer text."""
-        mlx_vlm = import_module("mlx_vlm")
-        formatted = mlx_vlm.prompt_utils.apply_chat_template(
-            self._processor,
-            self._config,
-            prompt_text,
-            num_images=len(images),
-        )
-        if images:
-            output = mlx_vlm.generate(
-                self._model_obj,
-                self._processor,
-                formatted,
-                list(images),
-                max_tokens=self._max_new_tokens,
-            )
-        else:
-            output = mlx_vlm.generate(
-                self._model_obj,
-                self._processor,
-                formatted,
-                None,
-                max_tokens=self._max_new_tokens,
-            )
-        return self._coerce_caption(output)
 
     def _synthesize(self, question: str, observations: Sequence[str]) -> str:
         """Combine per-frame observations into one concise final answer."""
@@ -275,7 +248,7 @@ class JinaVlmAnswerGenerator(JinaVlmMlxCaptioner):
             query=question,
             observations="\n".join(f"- {observation}" for observation in observations),
         )
-        return self._generate(text, [])
+        return self.generate(text)
 
 
 def answer_query(

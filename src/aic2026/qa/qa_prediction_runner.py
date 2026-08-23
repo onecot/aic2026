@@ -30,17 +30,13 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-from aic2026.embeddings import EmbeddingEncoder, EmbeddingSpace, validate_query_compatibility
+from aic2026.embeddings import EmbeddingEncoder
 from aic2026.embedding_runner import default_image_loader
 from aic2026.evaluation import load_eval_set
-from aic2026.index_artifact import IndexManifest
 from aic2026.qa.answer_generation import (
     ANSWER_DEVICE_CHOICES,
     DEFAULT_ANSWER_TOP_N,
@@ -57,13 +53,18 @@ from aic2026.qa.qa_types import (
     QaQueryResult,
     QueryTextField,
 )
-from aic2026.retrieval import IndexRetriever, RetrievalCandidate
+from aic2026.retrieval import RetrievalCandidate
 from aic2026.retrieval_candidates import (
-    WindowCandidate,
     build_video_candidates,
+    build_window_candidates,
     group_candidates_by_video,
-    group_windows,
     sort_by_score,
+)
+from aic2026.search import SearchEngine
+from aic2026.task_support import (
+    default_run_id,
+    utc_now_iso,
+    validate_query_text_field,
 )
 from aic2026.text_query import TextQuery
 
@@ -302,77 +303,178 @@ def run_qa_prediction_for_queries(
     if len(queries) > query_source_count:
         raise ValueError("query_source_count must be >= the number of queries")
 
-    retriever = IndexRetriever(index_artifact_dir)
-    spaces_compatible = encoder.embedding_space.is_compatible_with(retriever.manifest.embedding_space)
-    override_used = False
-    if not spaces_compatible:
-        if not allow_embedding_space_mismatch:
-            _require_compatible_spaces(encoder.embedding_space, retriever.manifest)
-        override_used = True
-
+    engine = SearchEngine.from_parts(
+        encoder,
+        index_artifact_dir,
+        top_k=top_k,
+        allow_embedding_space_mismatch=allow_embedding_space_mismatch,
+    )
     answerer = None
     keyframes = None
-    image_loader = None
     if generate_answer:
         answerer = answer_generator if answer_generator is not None else JinaVlmAnswerGenerator(
             device=answer_device
         )
         keyframes = KeyframeEvidence(keyframes_dir)
-        image_loader = default_image_loader()
-        logger.info(
-            "QA answer generation enabled: model=%s device=%s top_n=%d keyframes=%s",
-            answerer.model_name,
-            answerer.device,
-            answer_top_n,
-            keyframes_dir,
-        )
 
     results: list[QaQueryResult] = []
     evidence_query_count = 0
     failed_query_count = 0
     for query in queries:
-        query_embedding = encoder.encode_text(query.query_text)
-        retrieval = _search_candidates(
-            retriever=retriever,
-            query_embedding=query_embedding,
+        result = search_qa(
+            engine,
+            query,
             top_k=top_k,
-            allow_mismatch=allow_embedding_space_mismatch,
-        )
-        predictions, video_candidates, window_candidates = _build_evidence(
-            retrieval,
             video_aggregation=video_aggregation,
             video_aggregation_top_n=video_aggregation_top_n,
             window_max_gap=window_max_gap,
+            answerer=answerer,
+            keyframes=keyframes,
+            answer_top_n=answer_top_n,
         )
-        result = QaQueryResult(
-            query_id=query.query_id,
-            query_text=query.query_text,
-            answer="",
-            predictions=predictions,
-            video_candidates=video_candidates,
-            window_candidates=window_candidates,
-        )
-        if answerer is not None:
-            result = answer_query(
-                result,
-                answerer=answerer,
-                keyframes=keyframes,
-                top_n=answer_top_n,
-                image_loader=image_loader,
+        if result.answer_evidence:
+            evidence_query_count += 1
+        if result.answer_error is not None:
+            failed_query_count += 1
+            logger.warning(
+                "QA answer generation failed for query %s: %s",
+                result.query_id,
+                result.answer_error,
             )
-            if result.answer_evidence:
-                evidence_query_count += 1
-            if result.answer_error is not None:
-                failed_query_count += 1
-                logger.warning(
-                    "QA answer generation failed for query %s: %s",
-                    result.query_id,
-                    result.answer_error,
-                )
         results.append(result)
+
+    artifact = compute_qa_manifest_and_results(
+        tuple(results),
+        engine=engine,
+        query_text_field=query_text_field,
+        top_k=top_k,
+        video_aggregation=video_aggregation,
+        video_aggregation_top_n=video_aggregation_top_n,
+        window_max_gap=window_max_gap,
+        model_config=model_config,
+        run_id=run_id,
+        query_source_path=query_source_path,
+        query_source_count=query_source_count,
+        selected_query_ids=selected_query_ids,
+        generate_answer=generate_answer,
+        answerer=answerer,
+        answer_top_n=answer_top_n,
+        keyframes_dir=keyframes_dir,
+        evidence_query_count=evidence_query_count,
+        failed_query_count=failed_query_count,
+    )
+    write_qa_artifact(prediction_output_dir, artifact)
+    return artifact
+
+
+def search_qa(
+    engine: SearchEngine,
+    query: TextQuery | str,
+    *,
+    top_k: int | None = None,
+    video_aggregation: str | None = None,
+    video_aggregation_top_n: int | None = None,
+    window_max_gap: int | None = None,
+    answerer: Any | None = None,
+    keyframes: KeyframeEvidence | None = None,
+    answer_top_n: int = DEFAULT_ANSWER_TOP_N,
+    query_id: str = "query",
+) -> QaQueryResult:
+    """Compute one QA query's evidence (and optional answer) entirely in memory.
+
+    This is the single-query entry point for interactive use: no evaluation
+    CSV and no artifact writes. Answer generation only runs when an
+    ``answerer`` is supplied together with ``keyframes``.
+
+    Expected input:
+        - engine: a constructed :class:`aic2026.search.SearchEngine`.
+        - query: a :class:`~aic2026.text_query.TextQuery` or plain text.
+        - top_k: optional per-call cutoff; defaults to the engine's.
+        - video_aggregation / video_aggregation_top_n / window_max_gap:
+          evidence-shaping options (see ``QaPredictionRunnerConfig``).
+        - answerer: optional generator exposing ``generate_answer(question,
+          images) -> str``; requires ``keyframes``.
+        - keyframes: keyframe evidence resolver; required with ``answerer``.
+        - answer_top_n: evidence-set size for answer generation.
+        - query_id: identifier used when ``query`` is plain text.
+
+    Returns:
+        - The typed QA result with ranked frame/video/window evidence and,
+          when answering, the filled ``answer`` / ``answer_evidence`` /
+          ``answer_error`` fields.
+
+    Raises:
+        - ValueError: for invalid inputs or incompatible embedding spaces
+          under strict mode.
+    """
+    if isinstance(query, str):
+        query = TextQuery(query_id=query_id, query_text=query)
+    retrieval = engine.search_text(query.query_text, top_k=top_k)
+    predictions, video_candidates, window_candidates = _build_evidence(
+        retrieval,
+        video_aggregation=video_aggregation,
+        video_aggregation_top_n=video_aggregation_top_n,
+        window_max_gap=window_max_gap,
+    )
+    result = QaQueryResult(
+        query_id=query.query_id,
+        query_text=query.query_text,
+        answer="",
+        predictions=predictions,
+        video_candidates=video_candidates,
+        window_candidates=window_candidates,
+    )
+    if answerer is not None:
+        if keyframes is None:
+            raise ValueError("keyframes resolver is required when an answerer is provided")
+        result = answer_query(result, answerer=answerer, keyframes=keyframes, top_n=answer_top_n)
+    return result
+
+
+def compute_qa_manifest_and_results(
+    results: tuple[QaQueryResult, ...],
+    *,
+    engine: SearchEngine,
+    query_text_field: QueryTextField,
+    top_k: int,
+    video_aggregation: str | None,
+    video_aggregation_top_n: int | None,
+    window_max_gap: int | None,
+    model_config: dict[str, Any] | None,
+    run_id: str | None,
+    query_source_path: Path | str,
+    query_source_count: int,
+    selected_query_ids: tuple[str, ...] | None,
+    generate_answer: bool,
+    answerer: Any | None,
+    answer_top_n: int,
+    keyframes_dir: Path | None,
+    evidence_query_count: int,
+    failed_query_count: int,
+) -> QaPredictionArtifact:
+    """Assemble the typed QA prediction artifact without writing files.
+
+    Expected input:
+        - results: computed per-query QA results in processing order.
+        - engine: the :class:`aic2026.search.SearchEngine` that produced
+          the results (used for manifest provenance).
+        - Remaining parameters: run options and answer-generation counters
+          recorded in the manifest (see ``run_qa_prediction_for_queries``).
+
+    Returns:
+        - The typed QA prediction artifact (not persisted).
+
+    Raises:
+        - ValueError: if there are no results or inputs are inconsistent.
+    """
+    validate_query_text_field(query_text_field)
+    if not results:
+        raise ValueError("results must contain at least one QA query result")
 
     answer_generation = None
     if generate_answer:
+        if answerer is None:
+            raise ValueError("generate_answer requires the answerer used for the run")
         answer_generation = {
             "model": answerer.model_name,
             "checkpoint": answerer.checkpoint,
@@ -380,16 +482,16 @@ def run_qa_prediction_for_queries(
             "top_n": answer_top_n,
             "prompt": QA_ANSWER_PROMPT,
             "max_new_tokens": int(getattr(answerer, "max_new_tokens", 0) or 0),
-            "keyframes_dir": str(Path(keyframes_dir).resolve()),
+            "keyframes_dir": str(Path(keyframes_dir).resolve()) if keyframes_dir is not None else "",
             "evidence_query_count": evidence_query_count,
             "failed_query_count": failed_query_count,
         }
 
-    artifact = QaPredictionArtifact(
+    return QaPredictionArtifact(
         manifest=QaPredictionManifest(
             schema_version="1.0",
-            run_id=run_id or _default_run_id(),
-            created_at=_utc_now_iso(),
+            run_id=run_id or default_run_id("qa"),
+            created_at=utc_now_iso(),
             evaluation_set_path=str(Path(query_source_path).resolve()),
             evaluation_set_query_count=query_source_count,
             processed_query_count=len(results),
@@ -398,19 +500,17 @@ def run_qa_prediction_for_queries(
             video_aggregation=video_aggregation,
             video_aggregation_top_n=video_aggregation_top_n,
             window_max_gap=window_max_gap,
-            embedding_space_compatible=spaces_compatible,
-            embedding_space_override_used=override_used,
-            index_artifact_path=str(Path(index_artifact_dir).resolve()),
-            index_manifest=retriever.manifest.to_dict(),
-            model_embedding_space=encoder.embedding_space.to_dict(),
+            embedding_space_compatible=engine.spaces_compatible,
+            embedding_space_override_used=engine.override_used,
+            index_artifact_path=str(Path(engine.retriever.artifact_dir).resolve()),
+            index_manifest=engine.manifest.to_dict(),
+            model_embedding_space=engine.embedding_space.to_dict(),
             model_config=model_config,
             selected_query_ids=selected_query_ids,
             answer_generation=answer_generation,
         ),
         query_results=tuple(results),
     )
-    write_qa_artifact(prediction_output_dir, artifact)
-    return artifact
 
 
 def write_qa_artifact(output_dir: Path | str, artifact: QaPredictionArtifact) -> None:
@@ -535,45 +635,8 @@ def _build_evidence(
     if window_max_gap is None:
         window_candidates = ()
     else:
-        window_candidates = _build_window_candidates(groups, window_max_gap)
+        window_candidates = build_window_candidates(groups, window_max_gap)
     return predictions, tuple(video_candidates), window_candidates
-
-
-def _build_window_candidates(
-    groups: dict[str, list[RetrievalCandidate]],
-    max_gap: int,
-) -> tuple[WindowCandidate, ...]:
-    """Group each video's frames into ranked temporal window candidates.
-
-    Expected input:
-        - groups: frame candidates grouped by video.
-        - max_gap: maximum frame-index distance inside one window.
-
-    Returns:
-        - Window candidates ranked by score (best window first); empty when
-          there are no candidates.
-
-    Raises:
-        - No exceptions.
-    """
-    windows: list[WindowCandidate] = []
-    for video_id, frames in groups.items():
-        by_index = sorted(frames, key=lambda candidate: candidate.frame_index)
-        indices = [candidate.frame_index for candidate in by_index]
-        for start, end in group_windows(indices, max_gap):
-            in_window = [candidate for candidate in by_index if start <= candidate.frame_index <= end]
-            score = max(float(candidate.score) for candidate in in_window)
-            windows.append(
-                WindowCandidate(
-                    video_id=video_id,
-                    frame_start=start,
-                    frame_end=end,
-                    score=score,
-                    rank=1,
-                )
-            )
-    ranked = sort_by_score(windows)
-    return tuple(replace(window, rank=rank) for rank, window in enumerate(ranked, start=1))
 
 
 def _to_qa_prediction(candidate: RetrievalCandidate, rank: int) -> QaPrediction:
@@ -584,67 +647,3 @@ def _to_qa_prediction(candidate: RetrievalCandidate, rank: int) -> QaPrediction:
         frame_index=candidate.frame_index,
         score=float(candidate.score),
     )
-
-
-def _require_compatible_spaces(model_space: EmbeddingSpace, manifest: IndexManifest) -> None:
-    """Require model/index embedding spaces to match exactly."""
-    index_space = manifest.embedding_space
-    if index_space is None:
-        raise ValueError("index artifact is missing embedding-space metadata")
-    if not model_space.is_compatible_with(index_space):
-        raise ValueError(
-            "incompatible embedding spaces between encoder and index: "
-            f"model {model_space.space_id!r} ({model_space.backend}/{model_space.model_id}) != "
-            f"index {index_space.space_id!r} ({index_space.backend}/{index_space.model_id})"
-        )
-
-
-def _search_candidates(
-    retriever: IndexRetriever,
-    query_embedding: Any,
-    top_k: int,
-    allow_mismatch: bool,
-) -> list[RetrievalCandidate]:
-    """Run retrieval under strict mode or explicit mismatch override.
-
-    Expected input:
-        - retriever: loaded index retriever.
-        - query_embedding: text embedding generated by the encoder.
-        - top_k: retrieval cutoff.
-        - allow_mismatch: explicit override gate.
-
-    Returns:
-        - Ranked retrieval candidates.
-
-    Raises:
-        - ValueError: for incompatible spaces under strict mode, or when the
-          override is requested for a non-legacy index that cannot accept raw
-          vectors by contract.
-    """
-    if not allow_mismatch:
-        validate_query_compatibility(query_embedding, retriever.manifest.embedding_space)
-        return retriever.search(query_embedding, top_k=top_k)
-
-    if query_embedding.space.is_compatible_with(retriever.manifest.embedding_space):
-        return retriever.search(query_embedding, top_k=top_k)
-
-    index_space = retriever.manifest.embedding_space
-    if index_space is None:
-        raise ValueError("index artifact is missing embedding-space metadata")
-    if index_space.backend != "legacy":
-        raise ValueError(
-            "embedding-space mismatch override is only supported for legacy indexes; "
-            f"index backend is {index_space.backend!r}"
-        )
-    query_vector = np.asarray(query_embedding.vector)
-    return retriever.search(query_vector, top_k=top_k)
-
-
-def _default_run_id() -> str:
-    """Return a deterministic-format run id for artifact provenance."""
-    return f"qa-run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-
-
-def _utc_now_iso() -> str:
-    """Return an ISO-8601 UTC timestamp with explicit Z suffix."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

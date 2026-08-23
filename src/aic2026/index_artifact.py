@@ -45,6 +45,7 @@ from typing import Any
 
 import numpy as np
 
+from aic2026.artifact_io import read_json_file, write_json_file, iter_ndjson, write_ndjson
 from aic2026.canonical import KeyframeTiming
 from aic2026.embeddings import EmbeddingSpace, legacy_embedding_space
 
@@ -213,9 +214,7 @@ def write_manifest(path: Path, manifest: IndexManifest) -> None:
     Raises:
         - OSError: if the file cannot be written.
     """
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(manifest.to_dict(), handle, indent=2)
-        handle.write("\n")
+    write_json_file(path, manifest.to_dict())
 
 
 def read_manifest(path: Path) -> IndexManifest:
@@ -233,9 +232,7 @@ def read_manifest(path: Path) -> IndexManifest:
         - ValueError: if the manifest is invalid or has an unsupported
           schema version.
     """
-    with path.open(encoding="utf-8") as handle:
-        payload = json.load(handle)
-    return IndexManifest.from_dict(payload)
+    return IndexManifest.from_dict(read_json_file(path))
 
 
 def write_frames(path: Path, frames: Iterable[KeyframeTiming]) -> int:
@@ -252,12 +249,7 @@ def write_frames(path: Path, frames: Iterable[KeyframeTiming]) -> int:
     Raises:
         - OSError: if the file cannot be written.
     """
-    count = 0
-    with path.open("w", encoding="utf-8") as handle:
-        for frame in frames:
-            handle.write(json.dumps(frame.to_dict()) + "\n")
-            count += 1
-    return count
+    return write_ndjson(path, (frame.to_dict() for frame in frames))
 
 
 def iter_frames(path: Path) -> Iterator[KeyframeTiming]:
@@ -274,11 +266,8 @@ def iter_frames(path: Path) -> Iterator[KeyframeTiming]:
         - json.JSONDecodeError: if a line is malformed.
         - ValueError: if a line fails the canonical contract.
     """
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip() == "":
-                continue
-            yield KeyframeTiming.from_dict(json.loads(line))
+    for record in iter_ndjson(path):
+        yield KeyframeTiming.from_dict(record)
 
 
 # ------------------------------------------------------------------ validation

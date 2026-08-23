@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from scripts.build_submission import build_submission
+from aic2026.submission import build_submission
 
 from aic2026.btc_inference import (
     run_btc_kis_prediction,
