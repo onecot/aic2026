@@ -1,0 +1,99 @@
+info:
+  name: Search
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{baseUrl}}/api/search"
+  body:
+    type: json
+    data: |-
+      {
+        "query": "một người đang nấu ăn trong bếp",
+        "limit": 20,
+        "task": "kis"
+      }
+  auth: inherit
+
+runtime:
+  variables:
+    - name: baseUrl
+      value: ""
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
+
+examples:
+  - name: 200 Response
+    description: Successful Response
+    request:
+      url: "{{baseUrl}}/api/search"
+      method: POST
+      body:
+        type: json
+        data: |-
+          {
+            "query": "",
+            "task": "",
+            "limit": 0
+          }
+    response:
+      status: 200
+      statusText: OK
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "query": "",
+            "results": [
+              {
+                "rank": 0,
+                "video_id": "",
+                "frame_index": 0,
+                "keyframe_ordinal": 0,
+                "pts_time": 0,
+                "score": 0
+              }
+            ]
+          }
+  - name: 422 Response
+    description: Validation Error
+    request:
+      url: "{{baseUrl}}/api/search"
+      method: POST
+      body:
+        type: json
+        data: |-
+          {
+            "query": "",
+            "task": "",
+            "limit": 0
+          }
+    response:
+      status: 422
+      statusText: Unprocessable Entity
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "detail": [
+              {
+                "loc": [],
+                "msg": "",
+                "type": "",
+                "input": "",
+                "ctx": {}
+              }
+            ]
+          }

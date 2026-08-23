@@ -1,0 +1,29 @@
+opencollection: 1.0.0
+
+info:
+  name: AIC2026 Retrieval API
+  version: "1"
+config:
+  proxy:
+    inherit: true
+    config:
+      protocol: http
+      hostname: ""
+      port: ""
+      auth:
+        username: ""
+        password: ""
+      bypassProxy: ""
+bundled: false
+extensions:
+  bruno:
+    ignore:
+      - node_modules
+      - .git
+    openapi:
+      - sourceUrl: http://127.0.0.1:8000/openapi.json
+        groupBy: tags
+        lastSyncDate: 2026-08-23T06:39:13.793Z
+        specHash: 66be85184decd65b389a847a82bcf115
+        autoCheck: true
+        autoCheckInterval: 5

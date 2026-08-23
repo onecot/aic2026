@@ -55,3 +55,6 @@ outputs/
 *.onnx*.npy
 experiments/*/shard/*.npy
 submission/
+
+# Agent working files
+.agents/

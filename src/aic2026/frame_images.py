@@ -15,7 +15,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aic2026.keyframe_materialize import IMAGES_DIRNAME, image_filename
+#: Name of the materialized per-video image collection inside a keyframe
+#: artifact (``adaptive_sbd_v1`` layout).
+IMAGES_DIRNAME = "images"
+
+
+def image_filename(keyframe_ordinal: int) -> str:
+    """Return the canonical materialized image filename for one ordinal.
+
+    Expected input:
+        - keyframe_ordinal: 1-based keyframe ordinal.
+
+    Returns:
+        - Filename of the form ``<ordinal:06d>.jpg``.
+    """
+    return f"{keyframe_ordinal:06d}.jpg"
 
 
 def find_keyframe_image(

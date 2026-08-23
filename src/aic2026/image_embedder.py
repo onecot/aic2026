@@ -1,7 +1,7 @@
 """Reusable, hardware-aware image-embedding interface and backend registry.
 
 This module is the boundary between the shard embedding pipeline
-(:mod:`aic2026.embedding_shard`) and concrete model backends. It defines:
+(:mod:`aic2026.assets.embedding_shard`) and concrete model backends. It defines:
 
 - the :class:`ImageEmbedder` protocol (``encode_images`` + model identity);
 - portable device selection (``resolve_device`` / ``available_devices``);
@@ -18,18 +18,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from aic2026.config import Config, OpenClipConfig
+from aic2026.config import Config
 from aic2026.embeddings import EmbeddingEncoder, EmbeddingSpace
 
 #: Backend used when a bare model name (no ``backend:`` prefix) is given.
-DEFAULT_BACKEND = "openclip"
+DEFAULT_BACKEND = "jina-clip"
 
 #: Pretrained/checkpoint used when a model spec omits it.
-DEFAULT_PRETRAINED = "laion2b_s34b_b79k"
+DEFAULT_PRETRAINED = "jinaai/jina-clip-v2"
 
 #: Valid device selection values for the CLI / resolver.
 DEVICE_CHOICES = ("auto", "cpu", "mps", "cuda")
@@ -41,7 +42,7 @@ class ImageEmbedder(Protocol):
 
     Attributes:
         - model_name: stable identity of the loaded model (backend + arch +
-          checkpoint), e.g. ``openclip:ViT-L-14:laion2b_s32b_b82k``.
+          checkpoint), e.g. ``jina-clip:jina-clip-v2:jinaai/jina-clip-v2``.
         - embedding_dim: positive vector length emitted per image.
         - device: the concrete resolved runtime device (``cuda``, ``mps``,
           or ``cpu``).
@@ -151,8 +152,8 @@ def _parse_model_spec(model: str, default_pretrained: str) -> tuple[str, str, st
     """Split a model spec into ``(backend, model_name, pretrained)``.
 
     Accepted forms:
-        - ``openclip:ViT-L-14:laion2b_s32b_b82k`` (backend + model + pretrained)
-        - ``openclip:ViT-L-14`` (backend + model, default pretrained)
+        - ``jina-clip:jina-clip-v2:jinaai/jina-clip-v2`` (backend + model + pretrained)
+        - ``jina-clip:jina-clip-v2`` (backend + model, default pretrained)
         - ``ViT-L-14`` (bare model, default backend + default pretrained)
 
     Expected input:
@@ -194,7 +195,7 @@ def register_embedder(
 
     Expected input:
         - backend: the backend name used as the ``backend:`` prefix of a model
-          spec (e.g. ``openclip``, ``jina-clip``, ``siglip``).
+          spec (e.g. ``jina-clip``; register others only if a real backend is added).
 
     Returns:
         - A decorator that registers the given factory.
@@ -209,31 +210,12 @@ def register_embedder(
     return decorator
 
 
-def _openclip_factory(
-    model_name: str,
-    pretrained: str | None,
-    device: str,
-    precision: str,
-    config: OpenClipConfig | None,
-) -> ImageEmbedder:
-    """Construct the OpenCLIP embedder (lazy import avoids a circular import)."""
-    from aic2026.model_backends.openclip import OpenClipImageEmbedder
-
-    return OpenClipImageEmbedder(
-        model_name=model_name,
-        pretrained=pretrained,
-        device=device,
-        precision=precision,
-        config=config,
-    )
-
-
 def _jina_factory(
     model_name: str,
     pretrained: str | None,
     device: str,
     precision: str,
-    config: OpenClipConfig | None,
+    config: ModelConfig | None,
 ) -> ImageEmbedder:
     """Construct the Jina CLIP embedder (lazy import avoids a circular import)."""
     from aic2026.model_backends.jina import JinaClipImageEmbedder
@@ -247,26 +229,53 @@ def _jina_factory(
     )
 
 
-EMBEDDER_FACTORIES[DEFAULT_BACKEND] = _openclip_factory
-EMBEDDER_FACTORIES["jina-clip"] = _jina_factory
+EMBEDDER_FACTORIES[DEFAULT_BACKEND] = _jina_factory
+
+
+#: Callable ``path -> backend-native image`` used by pipelines that decode
+#: keyframe images from disk.
+ImageLoader = Callable[[Path], object]
+
+
+def default_image_loader() -> ImageLoader:
+    """Return a Pillow-based image loader (lazy optional dependency).
+
+    Returns:
+        - A callable ``path -> fully-loaded RGB PIL image``.
+
+    Raises:
+        - ImportError: if Pillow is unavailable.
+    """
+    def load(path: Path) -> object:
+        try:
+            from PIL import Image
+        except ModuleNotFoundError as exc:  # pragma: no cover - env dependent
+            raise ImportError(
+                "image loading requires Pillow; install pillow or pass image_loader=..."
+            ) from exc
+        with Image.open(path) as img:
+            return img.convert("RGB")
+
+    return load
 
 
 def create_image_embedder(
     model: str,
     device: str = "auto",
     precision: str = "fp32",
-    config: OpenClipConfig | None = None,
+    config: ModelConfig | None = None,
 ) -> ImageEmbedder:
     """Create an :class:`ImageEmbedder` from a model spec and device.
 
     Expected input:
         - model: a model spec ``[backend:]model[:pretrained]``; the default
-          backend is ``openclip``.
+          backend is ``jina-clip``.
         - device: ``auto``, ``cpu``, ``mps``, or ``cuda`` (resolved by the
           backend to a concrete runtime device).
         - precision: output precision ``fp32`` or ``fp16`` (backend-dependent).
-        - config: optional base OpenCLIP configuration supplying default
-          pretrained/normalization/preprocessing when not overridden.
+        - config: optional base :class:`aic2026.config.ModelConfig`
+          supplying default pretrained/normalization/preprocessing when not
+          overridden.
 
     Returns:
         - A ready-to-use :class:`ImageEmbedder` for the requested model.
@@ -294,28 +303,22 @@ def create_image_embedder(
 
 
 def create_text_encoder(config: Config) -> EmbeddingEncoder:
-    """Create the text encoder selected by the active model section.
-
-    Jina CLIP is selected when ``config.jina`` is present; otherwise the
-    OpenCLIP encoder is used. Both satisfy the
-    :class:`aic2026.embeddings.EmbeddingEncoder` protocol (``encode_text`` +
-    ``embedding_space``) and are imported lazily so the core package stays
-    independent of optional model runtimes.
+    """Create the text encoder for the active model configuration.
 
     Expected input:
-        - config: effective configuration with an optional ``jina`` section.
+        - config: effective configuration whose ``model`` section selects
+          the backend (production default: ``jina-clip`` / jina-clip-v2).
 
     Returns:
         - A ready-to-use text encoder matching the active embedding space.
 
     Raises:
-        - RuntimeError: if the selected backend's optional dependencies or
-          model/checkpoint cannot be loaded.
+        - ValueError: if the configured backend has no registered encoder.
+        - RuntimeError: if the backend optional dependencies or model
+          checkpoint cannot be loaded.
     """
-    if config.jina is not None:
+    if config.model.backend == "jina-clip":
         from aic2026.model_backends.jina import JinaClipEncoder
 
-        return JinaClipEncoder(config.jina)
-    from aic2026.model_backends.openclip import OpenClipEncoder
-
-    return OpenClipEncoder(config.openclip)
+        return JinaClipEncoder(config.model)
+    raise ValueError(f"unknown embedding backend {config.model.backend!r}")

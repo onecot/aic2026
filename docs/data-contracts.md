@@ -299,7 +299,7 @@ filenames, zero-padding, or npy layout. Currently the artifact's
 ANN payload can replace or supplement it without changing the row-order or
 identity contract.
 
-## Image embedding artifact (`aic2026.embedding_artifact`, `aic2026.embedding_runner`)
+## Image embedding artifact (`aic2026.embedding_artifact`, `aic2026.assets.embedding_shard`)
 
 The image embedding stage converts canonical dataset keyframes into
 model-specific embedding vectors produced by an injected image encoder. It
@@ -323,13 +323,12 @@ the encoder, never in the runner.
 ### Public API
 
 ```python
-from aic2026.embedding_runner import build_embeddings
+from aic2026.assets.embedding_shard import embed_shard
 
-manifest = build_embeddings(
-    dataset,          # Dataset accessor
-    encoder,          # EmbeddingEncoder implementation
+manifest = embed_shard(
+    frames_path,      # canonical frames.ndjson input shard
     artifact_dir,     # output directory (created if absent)
-    artifact_id,      # unique run identity
+    encoder,          # EmbeddingEncoder / ImageEmbedder implementation
     batch_size=16,    # keyframes per model invocation / checkpoint flush
     resume=True,      # continue or validate a partial/complete build
     stop_after_rows=None,  # testing hook: no final manifest is written
@@ -580,7 +579,7 @@ never exposes a partially written artifact.
 | --- | --- | --- |
 | `schema_version` | string | must equal `QA_PREDICTION_SCHEMA_VERSION = "1.0"` |
 | `run_id` / `created_at` | string | run provenance (ISO-8601 UTC with `Z` suffix) |
-| `evaluation_set_path` | string | resolved evaluation CSV path |
+| `evaluation_set_path` | string | portable query-source identifier (repo-relative path when inside the repository, otherwise the final path component; never an absolute machine path) |
 | `evaluation_set_query_count` | int | number of QA rows in the set (`>= 1`) |
 | `processed_query_count` | int | number of query results (`== len(query_results)`) |
 | `query_text_field` | string | `query_text_vi` or `query_text_en` |
@@ -590,7 +589,7 @@ never exposes a partially written artifact.
 | `window_max_gap` | int \| null | positive temporal-window grouping gap, or `null` |
 | `embedding_space_compatible` | bool | whether encoder/index spaces matched |
 | `embedding_space_override_used` | bool | override used (implies `embedding_space_compatible == false`) |
-| `index_artifact_path` | string | resolved index artifact directory |
+| `index_artifact_path` | string | portable index artifact location (same rules as `evaluation_set_path`) |
 | `index_manifest` | object | the referenced index artifact's manifest |
 | `model_embedding_space` | object | encoder embedding space |
 | `model_config` | object \| null | JSON-serializable model configuration (provenance) |
@@ -602,8 +601,9 @@ Each line is one `QaQueryResult`:
 
 - `query_id`: canonical query identifier.
 - `query_text`: the resolved query text that was encoded.
-- `answer`: per-query textual answer. The retrieval foundation writes `""`;
-  a future answer-generation stage fills it before submission.
+- `answer`: per-query textual answer. Retrieval-only runs write `""`;
+  answer generation (`aic2026.qa.answer_generation`, Jina VLM via
+  `aic2026.vlm_jina`) fills it before submission.
 - `predictions`: ranked frame evidence, each `{rank, video_id, frame_index,
   score}` (1-based strictly increasing ranks; empty when retrieval returned
   nothing).
@@ -632,120 +632,76 @@ answer or no evidence. When the official format is published, only
 `qa_submission.py` and its tests change; the artifact contract above is
 independent of the submission layout.
 
-## OCR artifact contract (`aic2026.ocr_generation`)
 
-The OCR stage (`src/aic2026/ocr_generation.py`) augments canonical keyframes
-with extracted text as a separate retrieval modality using PaddleOCR PP-OCRv5
-multilingual (Vietnamese + English). It reads a canonical keyframe artifact
-(`frames.ndjson` + the materialized `images/<video_id>/<ordinal:06d>.jpg`
-collection) and never modifies it. The keyframe artifact, the CLIP embedding
-pipeline, and existing index artifacts are untouched.
+---
 
-### Purpose and flow
+## KIS prediction artifact contract (`aic2026.kis_prediction_runner`)
 
-```text
-keyframe artifact (frames.ndjson + images/)
-        |
-        v
-generate_ocr  ->  PaddleOCR PP-OCRv5
-        |        batched, resumable, row-ordered
-        v
-OCR artifact directory: manifest.json + ocr.ndjson
-        |
-        v
-(future) OCR-text embedding / BM25 + retrieval fusion stage
-```
+One JSON file written atomically. `schema_version` is `"1.0"`.
 
-### Artifact layout
-
-One directory produced by `generate_ocr`:
-
-- `manifest.json`: one JSON object with the metadata below (written atomically
-  only on completion).
-- `ocr.ndjson`: one `KeyframeOcr` object per keyframe, in row order.
-- `checkpoint.json`: resume state; present only while the build is incomplete
-  (deleted once `manifest.json` is written).
-
-An interrupted run never exposes a `manifest.json`; a resumed run revalidates
-identity (backend, model, languages, source, total records) before continuing
-and skips already-processed records.
-
-### Row-order contract
-
-Row `i` of `ocr.ndjson` corresponds to line `i` of the source
-`frames.ndjson`. Row order is deterministic: source file order. This is the
-stable lookup key downstream stages rely on.
-
-### `manifest.json` fields
+Top-level fields:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | must equal `OCR_ARTIFACT_SCHEMA_VERSION = "1.0"` |
-| `artifact_id` | string | the output directory name (run identity) |
-| `backend` | string | OCR backend, e.g. `paddleocr` |
-| `model` | string | model identity, e.g. `paddleocr:PP-OCRv5_mobile` |
-| `languages` | list[string] | configured OCR languages, e.g. `["vi", "en"]` |
-| `device` | string | concrete runtime device (`gpu:0` or `cpu`) |
-| `batch_size` | int | records per engine invocation (`>= 1`) |
-| `source_frames` | string | resolved source `frames.ndjson` path |
-| `num_records` | int | number `N` of OCR records |
-| `num_videos` | int | number of distinct videos covered |
-| `num_failed` | int | records with `status == "error"` (`0..num_records`) |
-| `canonical_schema_version` | string | canonical schema version of the source frames |
-| `created_at` | string | ISO-8601 UTC completion timestamp |
+| `schema_version` | string | must equal `"1.0"` |
+| `run_id` / `created_at` | string | run provenance (ISO-8601 UTC `Z`) |
+| `evaluation_set_path` | string | portable query-source identifier (repo-relative when possible, else final component) |
+| `evaluation_set_query_count` | int | total queries at the source (`>= 1`) |
+| `processed_query_count` | int | `== len(query_results)` |
+| `query_text_field` | string | `query_text_vi` or `query_text_en` |
+| `top_k` | int | retrieval cutoff per query |
+| `embedding_space_compatible` | bool | encoder/index space match |
+| `embedding_space_override_used` | bool | legacy-index override applied |
+| `index_artifact_path` | string | portable index location |
+| `index_manifest` | object | referenced index manifest |
+| `model_embedding_space` | object | encoder embedding space |
+| `model_config` | object \| null | model provenance |
+| `selected_query_ids` | array \| null | explicit subset, or `null` |
+| `query_results` | array | one result per processed query |
 
-### `ocr.ndjson` per-line schema
+Each `query_results[i]`: `{query_id, query_text,
+predictions: [{rank, video_id, frame_index, score}]}` with strictly
+increasing ranks. Readers re-validate on load
+(`read_kis_prediction_artifact`).
 
-Each line is one `KeyframeOcr`:
+## TRAKE prediction artifact contract (`aic2026.trake`)
 
-- `video_id`: canonical `{value: "L25_V085"}` video identity.
-- `keyframe_ordinal`: 1-based keyframe ordinal within the video.
-- `frame_index`: 0-based keyframe index in the original video.
-- `ocr_text`: raw detected text (lines joined with spaces; empty on failure
-  or when no text is found).
-- `ocr_text_normalized`: normalized copy of `ocr_text` — lowercase,
-  whitespace-normalized, duplicated symbols removed, Vietnamese accents kept.
-  Text is never translated.
-- `ocr_lines`: list of detected text lines, in reading order; each has:
-  - `text`: the recognized text;
-  - `confidence`: recognition confidence in `[0.0, 1.0]`;
-  - `bbox`: axis-aligned `[x1, y1, x2, y2]` in image pixel coordinates.
-- `status`: `ok` or `error`.
-- `error`: `null` on success, otherwise a human-readable failure message.
+One directory: `manifest.json` + `predictions.jsonl`, both atomic;
+`schema_version = "1.0"`.
 
-Row alignment is always preserved: a missing or corrupted image yields an
-`error` record (empty text) instead of dropping the row, so indexes stay
-stable.
+Manifest fields match QA minus QA-specific options, plus:
 
-### Build behavior
+- `window_max_gap`: positive gap for per-event temporal windows (`null`
+  disables windows).
+- No `video_aggregation*` or `answer_generation` fields.
 
-- Deterministic input order: source `frames.ndjson` file order.
-- Resumable via `checkpoint.json`; already-processed records are skipped on
-  resume and the artifact is complete only after `manifest.json` is written
-  atomically (the checkpoint is then deleted).
-- Graceful degradation: image load failures become `error` records; a failed
-  batch OCR call falls back to per-image extraction.
-- The keyframe artifact is read-only: this stage never writes back into the
-  source directory.
+Each `predictions.jsonl` line (`TrakeQueryResult`):
 
-### Public API
+```text
+{query_id, query_text, events: [{event_id, event_text,
+    predictions: [{rank, video_id, keyframe_ordinal, frame_index, pts_time, score}],
+    windows: [{video_id, frame_start, frame_end, score, rank}]}]}
+```
 
-- `generate_ocr(keyframes_dir, output_dir, *, backend="paddleocr", model=None,
-  batch_size, device, resume, max_records, stop_after_records, progress,
-  ocr_engine, image_loader, languages, upscale_factor, contrast, sharpen)
-  -> OcrManifest`
-- `KeyframeOcr` / `OcrLine` / `OcrManifest` / `OcrCheckpoint` (typed
-  serializable records, `to_dict`/`from_dict`)
-- `read_ocr_artifact(artifact_dir)` / `validate_ocr_artifact(manifest,
-  artifact_dir)`
-- `PaddleOcrEngine` (lazy optional dependency);
-  `create_ocr_engine(backend, ...)` factory
-- `normalize_ocr_text(text)` / `preprocess_image(image, ...)`
+Events appear in declared order; event predictions are rank-ordered; event
+windows are score-ranked. Event lists come from the query text only
+(`E<number>: text` lines or `(n) event ...` numbered lists).
 
-### Relationship to later stages
+## Submission export contract (`aic2026.submission`)
 
-OCR text is intended as input for a future OCR-text embedding / BM25 /
-retrieval-fusion stage that consumes this artifact through its contract, not
-by inspecting the OCR pipeline internals. The embedding and index
-contracts are unaffected. OCR is another modality artifact, not a replacement
-for visual (CLIP) retrieval.
+Per-query CSV files named after the query file (`query-<name>-<task>.csv`),
+no header, UTF-8, comma-delimited:
+
+| Task | Columns | Limits |
+| --- | --- | --- |
+| KIS | `video_id,frame_index` | ≤ 100 rows |
+| QA | `video_id,frame_index,answer` | answer non-empty, ≤ 100 chars |
+| TRAKE | `video_id,frame_E1,...,frame_EN` | frames strictly increasing; complete sequences only |
+
+Packaging produces `submission.zip` containing the whole `submission/`
+directory; zip contents are re-inspected and every CSV re-validated after
+generation. Query matching is strict and fail-loud:
+`btc-<name>-<task>` query-id equality (with normalized-text check), then
+exact text, then whitespace-normalized text; ambiguity aborts the build.
+The library entry point also accepts typed in-memory results instead of
+artifact paths.

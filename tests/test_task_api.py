@@ -203,3 +203,45 @@ class TestFrameResolver:
     def test_invalid_ordinal_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="positive integer"):
             find_keyframe_image(tmp_path, "L21_V001", 0)
+
+
+class TestProvenancePortability:
+    def test_portable_path_helper(self) -> None:
+        from aic2026.task_support import portable_source_path
+
+        # inside the root -> repo-relative POSIX path
+        assert (
+            portable_source_path(Path("/repo/data/sotuyen/thunghiem"), root=Path("/repo"))
+            == "data/sotuyen/thunghiem"
+        )
+        # outside any known root -> final component only
+        assert portable_source_path(Path("/Users/someone/anywhere/queries"), root=Path("/repo")) == "queries"
+
+    def test_generated_artifact_has_no_absolute_machine_path(
+        self, engine: SearchEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: artifacts record portable provenance, not /Users paths."""
+        import json
+
+        import aic2026.config as config_module
+        from aic2026.kis_prediction_runner import write_kis_prediction_artifact
+
+        fake_root = tmp_path / "repo"
+        query_dir = fake_root / "data" / "sotuyen" / "thunghiem"
+        query_dir.mkdir(parents=True)
+        monkeypatch.setattr(config_module, "project_root", lambda: fake_root)
+
+        artifact = compute_kis_artifact(
+            (TextQuery(query_id="btc-x-kis", query_text="boat"),),
+            engine=engine,
+            query_source_path=query_dir,
+            query_source_count=1,
+        )
+        out = tmp_path / "kis.json"
+        write_kis_prediction_artifact(out, artifact)
+
+        payload = out.read_text(encoding="utf-8")
+        data = json.loads(payload)
+        assert data["evaluation_set_path"] == "data/sotuyen/thunghiem"
+        assert str(tmp_path) not in data["evaluation_set_path"]
+        assert not Path(data["evaluation_set_path"]).is_absolute()

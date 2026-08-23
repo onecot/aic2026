@@ -17,7 +17,7 @@ from aic2026.image_embedder import DEFAULT_PRETRAINED
 from aic2026.model_backends import jina
 from aic2026.model_backends.jina import (
     DEFAULT_CHECKPOINT,
-    JinaClipConfig,
+    ModelConfig,
     JinaClipEncoder,
     JinaClipImageEmbedder,
     JinaClipRuntimeError,
@@ -152,7 +152,7 @@ class _FakeTransformers:
         return self.processor
 
 
-def _config(**overrides: str) -> JinaClipConfig:
+def _config(**overrides: str) -> ModelConfig:
     values = {
         "backend": "jina-clip",
         "model_name": "test-model",
@@ -164,7 +164,7 @@ def _config(**overrides: str) -> JinaClipConfig:
         "tokenizer_id": "test-tokenizer-v1",
     }
     values.update(overrides)
-    return JinaClipConfig(**values)
+    return ModelConfig(**values)
 
 
 def _encoder(
@@ -415,7 +415,6 @@ def test_precision_controls_output_dtype(monkeypatch: pytest.MonkeyPatch) -> Non
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"backend": "openclip"},
         {"device": "invalid"},
         {"precision": "bf16"},
         {"normalization": "unknown"},

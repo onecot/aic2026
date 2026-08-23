@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aic2026.artifact_io import read_json_object, write_json_atomic
 from aic2026.embeddings import EmbeddingEncoder
 from aic2026.evaluation import EvaluationQuery, EvaluationTask, load_eval_set
 from aic2026.kis_scoring import KisPrediction
@@ -23,6 +24,7 @@ from aic2026.search import SearchEngine
 from aic2026.task_support import (
     QueryTextField,
     default_run_id,
+    portable_source_path,
     resolve_query_text_field,
     utc_now_iso,
     validate_query_text_field,
@@ -471,14 +473,14 @@ def compute_kis_artifact(
         schema_version=KIS_PREDICTION_SCHEMA_VERSION,
         run_id=run_id or default_run_id("kis"),
         created_at=utc_now_iso(),
-        evaluation_set_path=str(Path(query_source_path).resolve()),
+        evaluation_set_path=portable_source_path(query_source_path),
         evaluation_set_query_count=query_source_count,
         processed_query_count=len(results),
         query_text_field=query_text_field,
         top_k=effective_top_k,
         embedding_space_compatible=engine.spaces_compatible,
         embedding_space_override_used=engine.override_used,
-        index_artifact_path=str(Path(engine.retriever.artifact_dir).resolve()),
+        index_artifact_path=portable_source_path(engine.retriever.artifact_dir),
         index_manifest=engine.manifest.to_dict(),
         model_embedding_space=engine.embedding_space.to_dict(),
         model_config=model_config,
@@ -500,21 +502,12 @@ def write_kis_prediction_artifact(path: Path | str, artifact: KisPredictionArtif
     Raises:
         - OSError: if writing fails.
     """
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8") as handle:
-        json.dump(artifact.to_dict(), handle, indent=2)
-        handle.write("\n")
-    temp_path.replace(output_path)
+    write_json_atomic(Path(path), artifact.to_dict())
 
 
 def read_kis_prediction_artifact(path: Path | str) -> KisPredictionArtifact:
     """Read and validate one KIS prediction artifact JSON."""
-    artifact_path = Path(path)
-    with artifact_path.open(encoding="utf-8") as handle:
-        payload = json.load(handle)
-    return KisPredictionArtifact.from_dict(payload)
+    return KisPredictionArtifact.from_dict(read_json_object(Path(path)))
 
 
 def load_kis_predictions_for_scoring(path: Path | str) -> dict[str, list[KisPrediction]]:

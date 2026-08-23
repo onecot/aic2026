@@ -1,53 +1,35 @@
 # Default configuration for the AIC 2026 project.
 #
-# This is the base layer of the configuration precedence model:
-#   base/default configuration
-#         -> environment or experiment configuration
-#         -> explicit CLI overrides
+# The single ``models`` block is the active production backend:
+# Jina CLIP v2, matching the production retrieval stack
+# (data/interim/indexes/jina-v2-full built from outputs/embeddings_jina_v2).
+# The full embedding-space identity recorded below is embedded in every
+# embedding/index/prediction artifact, so vectors from a different model are
+# never silently mixed.
 #
-# The ACTIVE model section is ``models.jina`` (jina-clip-v2). It matches the
-# production retrieval stack: query encoding against the
-# ``data/interim/indexes/jina-v2-full`` index built from the
-# ``outputs/embeddings_jina_v2`` embedding artifact. The full embedding space
-# identity is recorded in every embedding/index/prediction artifact, so
-# artifacts built with a different model are never silently mixed.
-#
-# ``models.openclip`` is retained only as an optional baseline backend; it is
-# NOT the default for prediction runs.
+# Override mechanism: pass an alternative YAML with the same schema via
+# --config / load_config(path). There are no layered experiment configs.
 
 project:
   name: aic2026
   version: 0.1.0
 
 data:
-  # Path to the raw BTC-provided dataset root, relative to the repo root.
+  # Raw BTC-provided dataset root (rebuild input for keyframes/embeddings).
   raw_dir: data/raw/aic2026_batch1
-  # Root directory for derived artifacts (e.g. indexes), relative to the
-  # repo root. Each index artifact lives in its own subdirectory.
+  # Root directory containing index artifacts.
   indexes_dir: data/interim/indexes
-  # Root directory of the materialized keyframe artifact (frames.ndjson +
-  # images/), relative to the repo root. QA answer generation resolves
-  # retrieved evidence frames to images in this collection.
+  # Materialized keyframe artifact: authoritative frame metadata + images.
   keyframes_dir: data/keyframes/adaptive_sbd_v1
 
 models:
-  jina:
-    backend: jina-clip
-    model_name: jina-clip-v2
-    pretrained: jinaai/jina-clip-v2
-    device: auto
-    precision: fp32
-    normalization: l2
-    # Project-managed processing/tokenizer revision labels; bump them when
-    # changing the convention for an otherwise identical model/checkpoint.
-    preprocessing_id: jina-clip-v2-preprocess-v1
-    tokenizer_id: jina-clip-v2-tokenizer-v1
-  openclip:
-    backend: openclip
-    model_name: ViT-B-32
-    pretrained: laion2b_s34b_b79k
-    device: auto
-    precision: fp32
-    normalization: l2
-    preprocessing_id: openclip-default-v1
-    tokenizer_id: openclip-default-v1
+  backend: jina-clip
+  model_name: jina-clip-v2
+  pretrained: jinaai/jina-clip-v2
+  device: auto
+  precision: fp32
+  normalization: l2
+  # Project-managed processing/tokenizer revision labels; bump them when
+  # changing the convention for an otherwise identical model/checkpoint.
+  preprocessing_id: jina-clip-v2-preprocess-v1
+  tokenizer_id: jina-clip-v2-tokenizer-v1

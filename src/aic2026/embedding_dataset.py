@@ -1,20 +1,20 @@
 """Dataset-like read-only source backed by one embedding artifact.
 
 This module lets the index stage consume an artifact produced by
-``aic2026.embedding_runner.build_embeddings`` (``manifest.json``,
+``aic2026.assets.embedding_shard.embed_shard`` (``manifest.json``,
 ``embeddings.npy``, ``frames.ndjson``) without re-encoding images or touching
 the raw BTC dataset. It exposes the same small accessor API that
 ``build_index`` requires so an index can be built directly from stored
 embeddings.
 
 All three embedding artifact manifest schemas are accepted, matching
-``aic2026.embedding_verify``:
+``aic2026.assets.embedding_verify``:
 
 - ``EmbeddingManifest`` (``aic2026.embedding_artifact``), written by the
   embedding runner / ``embed_shard.py`` merge target;
-- ``ShardManifest`` (``aic2026.embedding_shard``), written by
+- ``ShardManifest`` (``aic2026.assets.embedding_shard``), written by
   ``scripts/embed_shard.py`` per completed shard;
-- ``MergeManifest`` (``aic2026.embedding_merge``), written by
+- ``MergeManifest`` (``aic2026.assets.embedding_merge``), written by
   ``scripts/merge_embedding_shards.py`` for the merged output.
 
 Shard and merge manifests are normalized in memory into the canonical
@@ -70,15 +70,15 @@ from aic2026.embedding_artifact import (
     EmbeddingManifest,
     iter_frames,
 )
-from aic2026.embedding_merge import MergeManifest
-from aic2026.embedding_shard import ShardManifest
+from aic2026.assets.embedding_merge import MergeManifest
+from aic2026.assets.embedding_shard import ShardManifest
 from aic2026.embeddings import EmbeddingSpace
 
 
 def as_embedding_manifest(artifact_dir: Path, payload: dict[str, Any]) -> EmbeddingManifest:
     """Normalize any supported embedding-artifact manifest to ``EmbeddingManifest``.
 
-    Dispatch follows ``aic2026.embedding_verify``: a ``source_shards`` key
+    Dispatch follows ``aic2026.assets.embedding_verify``: a ``source_shards`` key
     means a merge manifest, a ``worker_id`` key means a shard manifest, and
     anything else is treated as the canonical ``EmbeddingManifest``. Shard and
     merge manifests carry no ``artifact_id``, so the artifact directory name is

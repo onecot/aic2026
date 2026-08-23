@@ -8,7 +8,7 @@ caption generation. It wraps the local-first MLX port of ``jinaai/jina-vlm``
 
 ``mlx`` and ``mlx-vlm`` are imported only when the wrapper is constructed,
 so importing this module never requires the optional runtime (install with
-``pip install -e '.[caption-mlx]'``).
+``pip install -e '.[vlm-mlx]'``).
 """
 
 from __future__ import annotations
@@ -100,9 +100,9 @@ class JinaVlmMlx:
                 missing.append(name)
         if missing:
             raise JinaVlmRuntimeError(
-                "Jina VLM MLX requires the optional 'caption-mlx' dependency "
+                "Jina VLM MLX requires the optional 'vlm-mlx' dependency "
                 f"group; missing packages: {', '.join(missing)}. "
-                "Install with pip install -e '.[caption-mlx]'"
+                "Install with pip install -e '.[vlm-mlx]'"
             )
         return import_module("mlx_vlm")
 

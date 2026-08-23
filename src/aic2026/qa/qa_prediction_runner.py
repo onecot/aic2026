@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from aic2026.embeddings import EmbeddingEncoder
-from aic2026.embedding_runner import default_image_loader
+from aic2026.image_embedder import default_image_loader
 from aic2026.evaluation import load_eval_set
 from aic2026.qa.answer_generation import (
     ANSWER_DEVICE_CHOICES,
@@ -63,6 +63,7 @@ from aic2026.retrieval_candidates import (
 from aic2026.search import SearchEngine
 from aic2026.task_support import (
     default_run_id,
+    portable_source_path,
     utc_now_iso,
     validate_query_text_field,
 )
@@ -482,7 +483,7 @@ def compute_qa_manifest_and_results(
             "top_n": answer_top_n,
             "prompt": QA_ANSWER_PROMPT,
             "max_new_tokens": int(getattr(answerer, "max_new_tokens", 0) or 0),
-            "keyframes_dir": str(Path(keyframes_dir).resolve()) if keyframes_dir is not None else "",
+            "keyframes_dir": portable_source_path(keyframes_dir) if keyframes_dir is not None else "",
             "evidence_query_count": evidence_query_count,
             "failed_query_count": failed_query_count,
         }
@@ -492,7 +493,7 @@ def compute_qa_manifest_and_results(
             schema_version="1.0",
             run_id=run_id or default_run_id("qa"),
             created_at=utc_now_iso(),
-            evaluation_set_path=str(Path(query_source_path).resolve()),
+            evaluation_set_path=portable_source_path(query_source_path),
             evaluation_set_query_count=query_source_count,
             processed_query_count=len(results),
             query_text_field=query_text_field,
@@ -502,7 +503,7 @@ def compute_qa_manifest_and_results(
             window_max_gap=window_max_gap,
             embedding_space_compatible=engine.spaces_compatible,
             embedding_space_override_used=engine.override_used,
-            index_artifact_path=str(Path(engine.retriever.artifact_dir).resolve()),
+            index_artifact_path=portable_source_path(engine.retriever.artifact_dir),
             index_manifest=engine.manifest.to_dict(),
             model_embedding_space=engine.embedding_space.to_dict(),
             model_config=model_config,

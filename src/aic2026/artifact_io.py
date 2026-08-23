@@ -88,3 +88,42 @@ def iter_ndjson(path: Path) -> Iterator[dict[str, Any]]:
             if line.strip() == "":
                 continue
             yield json.loads(line)
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Write one JSON object atomically via a same-directory temp file.
+
+    Expected input:
+        - path: final file path (parent created if absent).
+        - payload: JSON-safe dictionary.
+
+    Returns:
+        - None.
+
+    Raises:
+        - OSError: if writing or the atomic replace fails.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+    tmp.replace(path)
+
+
+def read_json_object(path: Path) -> dict[str, Any]:
+    """Read and return a JSON object from ``path``.
+
+    Expected input:
+        - path: source file path.
+
+    Returns:
+        - The parsed dictionary.
+
+    Raises:
+        - FileNotFoundError: if the file does not exist.
+        - json.JSONDecodeError: if the JSON is malformed.
+    """
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)

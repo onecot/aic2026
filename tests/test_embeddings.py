@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from aic2026.config import Config, ModelConfig
 from aic2026.embeddings import (
     Embedding,
     EmbeddingSpace,
@@ -161,3 +162,61 @@ def test_retrieval_requires_compatible_typed_query_for_identified_index(tmp_path
         retriever.search(_embedding("text", _space(space_id="other-space")), top_k=1)
     with pytest.raises(ValueError, match="require an Embedding query"):
         retriever.search(np.array([1.0, 0.0, 0.0], dtype=np.float32), top_k=1)
+
+
+# ============================================================================
+# Section: image-embedder registry + image loader seam
+# ============================================================================
+
+
+def test_default_backend_is_jina_clip() -> None:
+    from aic2026.image_embedder import DEFAULT_BACKEND, EMBEDDER_FACTORIES
+
+    assert DEFAULT_BACKEND == "jina-clip"
+    assert "jina-clip" in EMBEDDER_FACTORIES
+
+
+def test_unknown_model_spec_backend_rejected() -> None:
+    import pytest as _pytest
+
+    from aic2026.image_embedder import create_image_embedder
+
+    with _pytest.raises(ValueError, match="unknown model backend"):
+        create_image_embedder("siglip:some-model")
+
+
+def test_default_image_loader_returns_rgb_image(tmp_path: Path) -> None:
+    from aic2026.image_embedder import default_image_loader
+    from PIL import Image
+
+    image_path = tmp_path / "frame.jpg"
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(image_path)
+    loaded = default_image_loader()(image_path)
+    assert loaded.size == (4, 4)
+    assert loaded.mode == "RGB"
+
+
+def test_create_text_encoder_rejects_unknown_backend() -> None:
+    import pytest as _pytest
+
+    from aic2026.config import load_config
+    from aic2026.image_embedder import create_text_encoder
+
+    real = load_config()
+    broken = Config(
+        data_raw_dir=real.data_raw_dir,
+        data_indexes_dir=real.data_indexes_dir,
+        data_keyframes_dir=real.data_keyframes_dir,
+        model=ModelConfig(
+            backend="siglip",
+            model_name="x",
+            pretrained="y",
+            device="cpu",
+            precision="fp32",
+            normalization="l2",
+            preprocessing_id="p",
+            tokenizer_id="t",
+        ),
+    )
+    with _pytest.raises(ValueError, match="unknown embedding backend"):
+        create_text_encoder(broken)

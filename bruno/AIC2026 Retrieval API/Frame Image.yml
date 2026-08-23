@@ -1,0 +1,78 @@
+info:
+  name: Frame Image
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{baseUrl}}/api/frames/:video_id/:frame_index"
+  params:
+    - name: video_id
+      value: L26_V355
+      type: path
+    - name: frame_index
+      value: "2018"
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
+
+examples:
+  - name: 200 Response
+    description: Successful Response
+    request:
+      url: "{{baseUrl}}/api/frames/:video_id/:frame_index"
+      method: GET
+      params:
+        - name: video_id
+          value: ""
+          type: path
+        - name: frame_index
+          value: ""
+          type: path
+    response:
+      status: 200
+      statusText: OK
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: ""
+  - name: 422 Response
+    description: Validation Error
+    request:
+      url: "{{baseUrl}}/api/frames/:video_id/:frame_index"
+      method: GET
+      params:
+        - name: video_id
+          value: ""
+          type: path
+        - name: frame_index
+          value: ""
+          type: path
+    response:
+      status: 422
+      statusText: Unprocessable Entity
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "detail": [
+              {
+                "loc": [],
+                "msg": "",
+                "type": "",
+                "input": "",
+                "ctx": {}
+              }
+            ]
+          }

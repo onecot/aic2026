@@ -1,7 +1,7 @@
 """Contract for the image-embedding-stage artifact.
 
 This module defines the on-disk contract for the artifact produced by the
-image embedding stage (``aic2026.embedding_runner``). It is deliberately
+image embedding stage (``aic2026.assets.embedding_shard``). It is deliberately
 independent of both the raw BTC directory layout and any model backend
 (OpenCLIP or otherwise): it only declares the files, schema, and
 serialization helpers for one embedding artifact.

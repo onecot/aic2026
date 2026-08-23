@@ -16,6 +16,7 @@ modules keep their own ranking, evidence shaping, and artifact contracts.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -144,6 +145,37 @@ def search_candidates(
 def utc_now_iso() -> str:
     """Return an ISO-8601 UTC timestamp with explicit Z suffix."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def portable_source_path(path: Path | str, *, root: Path | str | None = None) -> str:
+    """Return a portable, machine-independent provenance string for a path.
+
+    Provenance recorded in prediction artifacts must not embed absolute
+    machine-specific locations. When ``path`` lies inside the repository
+    root (or the explicit ``root``), the repo-relative POSIX path is
+    recorded; otherwise only the final path component survives.
+
+    Expected input:
+        - path: query-source or index-artifact location.
+        - root: optional repository root override (tests); defaults to
+          :func:`aic2026.config.project_root`.
+
+    Returns:
+        - A relative POSIX path when possible, else the path's name.
+
+    Raises:
+        - No exceptions.
+    """
+    if root is None:
+        from aic2026.config import project_root
+
+        base = project_root()
+    else:
+        base = Path(root)
+    try:
+        return Path(path).resolve().relative_to(base.resolve()).as_posix()
+    except (ValueError, OSError):
+        return Path(path).name
 
 
 def default_run_id(prefix: str) -> str:

@@ -2,7 +2,7 @@
 
 This module provides pure, reusable helpers (duration/ETA/throughput formatting)
 plus a lightweight :class:`ProgressReporter` and :class:`StageTimer` used by the
-embedding shard pipeline (:mod:`aic2026.embedding_shard`) and its CLI to report
+embedding shard pipeline (:mod:`aic2026.assets.embedding_shard`) and its CLI to report
 progress without hurting throughput.
 
 Design constraints:

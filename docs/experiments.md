@@ -24,6 +24,12 @@ statistical significance or robustness beyond the measured numbers.
 
 ### Standard evaluation pipeline
 
+> Historical note: this section records how the recorded runs were produced.
+> The `aic2026 predict-kis` CLI and `configs/experiments/*.yaml` files no
+> longer exist; equivalent runs today use `scripts/run_btc.py` or the Python
+> API (`SearchEngine` + `compute_kis_artifact`) with
+> `configs/default.yaml` (Jina CLIP v2).
+
 ```bash
 # 1. (model experiments) build image embeddings, then index them
 # 2. rank queries (CLI; model config comes from --config)

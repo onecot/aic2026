@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from aic2026.embedding_artifact import FRAMES_FILENAME, iter_frames
-from aic2026.embedding_runner import default_image_loader
+from aic2026.image_embedder import default_image_loader
 from aic2026.frame_images import find_keyframe_image
 from aic2026.qa.qa_types import QaPrediction, QaQueryResult
 from aic2026.vlm_jina import DEFAULT_JINA_VLM_MODEL, JinaVlmMlx

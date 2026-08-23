@@ -90,7 +90,7 @@ in commands.
 ## 5. Step 1: Verify assigned split
 
 ```bash
-python scripts/verify_video_split.py \
+python scripts/build_keyframes.py verify-split \
   --split-dir data/keyframe-splits/
 ```
 
@@ -102,7 +102,7 @@ video is duplicated or missing, and the totals match.
 ## 6. Step 2: Extract keyframes
 
 ```bash
-python scripts/extract_keyframes.py \
+python scripts/build_keyframes.py extract \
   --videos data/keyframe-splits/worker_XXX/videos.json \
   --video-root /PATH/TO/videos \
   --output-dir outputs/keyframes_worker_XXX \
@@ -146,7 +146,7 @@ manifest.json
 Verify the artifact before sending it back (exit code 0 = valid, 1 = invalid):
 
 ```bash
-python scripts/verify_keyframe_extraction.py \
+python scripts/build_keyframes.py verify \
   --output-dir outputs/keyframes_worker_XXX \
   --videos data/keyframe-splits/worker_XXX/videos.json
 ```
@@ -200,17 +200,17 @@ Once all workers deliver their `worker_XXX_result/keyframes/` folders:
 
 1. **Merge keyframe shards** into one canonical `frames.ndjson` /
    `map-keyframes/` artifact.
-2. **Materialize the keyframe images** with `scripts/materialize_keyframes.py`
+2. **Materialize the keyframe images** with `scripts/build_keyframes.py materialize`
    (decodes the selected frames from the original videos into the
    `adaptive_sbd_v1` image artifact), replacing the BTC keyframe collection.
 3. **Verify the materialized artifact** with
-   `scripts/verify_keyframe_materialization.py` (checks the manifest, frame
+   `scripts/build_keyframes.py verify-materialize` (checks the manifest, frame
    records, and image coverage; run on any machine without ffmpeg or media).
 4. **Prepare the embedding environment** on the target GPU machine
    (Kaggle/Modal): install the `jina` dependency group and the Jina CLIP v2
    checkpoint.
 5. **Run Jina CLIP v2 embeddings** on the materialized keyframe images.
 6. **Merge embeddings** into the final embedding artifact.
-7. **Verify the merged embedding artifact** with `scripts/verify_embedding.py`
+7. **Verify the merged embedding artifact** with `scripts/build_embeddings.py verify`
    (checks the manifest and model metadata, frame records, matrix shape/dtype,
    row counts, and that no vector is empty or NaN/Inf).

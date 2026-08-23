@@ -43,6 +43,7 @@ from aic2026.retrieval_candidates import (
 from aic2026.search import SearchEngine
 from aic2026.task_support import (
     default_run_id,
+    portable_source_path,
     resolve_query_text_field,
     utc_now_iso,
 )
@@ -594,7 +595,7 @@ def run_trake_prediction_for_queries(
             schema_version=TRAKE_PREDICTION_SCHEMA_VERSION,
             run_id=run_id or default_run_id("trake"),
             created_at=utc_now_iso(),
-            evaluation_set_path=str(Path(query_source_path).resolve()),
+            evaluation_set_path=portable_source_path(query_source_path),
             evaluation_set_query_count=query_source_count,
             processed_query_count=len(results),
             query_text_field=query_text_field,
@@ -602,7 +603,7 @@ def run_trake_prediction_for_queries(
             window_max_gap=window_max_gap,
             embedding_space_compatible=engine.spaces_compatible,
             embedding_space_override_used=engine.override_used,
-            index_artifact_path=str(Path(engine.retriever.artifact_dir).resolve()),
+            index_artifact_path=portable_source_path(engine.retriever.artifact_dir),
             index_manifest=engine.manifest.to_dict(),
             model_embedding_space=engine.embedding_space.to_dict(),
             model_config=model_config,

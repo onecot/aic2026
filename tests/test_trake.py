@@ -410,5 +410,5 @@ def test_manifest_records_run_metadata(tmp_path: Path) -> None:
     assert artifact.manifest.top_k == 2
     assert artifact.manifest.window_max_gap == 4
     assert artifact.manifest.query_text_field == "query_text_en"
-    assert artifact.manifest.evaluation_set_path == str(eval_path.resolve())
+    assert artifact.manifest.evaluation_set_path == eval_path.name  # portable provenance
     assert artifact.manifest.index_manifest["artifact_id"] == "trake-pred-test-index"

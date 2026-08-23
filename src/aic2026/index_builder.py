@@ -28,6 +28,7 @@ from aic2026.index_artifact import (
     EMBEDDINGS_FILENAME,
     NORMS_FILENAME,
 )
+from aic2026.artifact_io import read_json_object, write_json_atomic
 from aic2026.canonical import ClipEmbedding, CANONICAL_SCHEMA_VERSION
 from aic2026.embeddings import EmbeddingSpace, legacy_embedding_space
 
@@ -46,7 +47,7 @@ _CHECKPOINT_FILENAME = ".checkpoint.json"
 _BUILD_META_FILENAME = ".build_meta.json"
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
+def write_json_atomic(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -54,7 +55,7 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def _read_json(path: Path) -> dict:
+def read_json_object(path: Path) -> dict:
     with path.open(encoding="utf-8") as f:
         return json.load(f)
 
@@ -146,7 +147,7 @@ def build_index(
     # Step 1: inspect or load meta
     resuming_from_metadata = resume and meta_path.exists()
     if resuming_from_metadata:
-        meta_payload = _read_json(meta_path)
+        meta_payload = read_json_object(meta_path)
         meta = _BuildMeta(
             num_rows=int(meta_payload["num_rows"]),
             num_videos=int(meta_payload["num_videos"]),
@@ -181,7 +182,7 @@ def build_index(
         )
     if not (resume and meta_path.exists()):
         meta.embedding_space = resolved_space.to_dict()
-        _write_json_atomic(meta_path, {
+        write_json_atomic(meta_path, {
             "num_rows": meta.num_rows,
             "num_videos": meta.num_videos,
             "embedding_dim": meta.embedding_dim,
@@ -203,7 +204,7 @@ def build_index(
     start_row = 0
     if resume and checkpoint_path.exists():
         try:
-            chk = _read_json(checkpoint_path)
+            chk = read_json_object(checkpoint_path)
             start_row = int(chk.get("next_row", 0))
         except Exception:
             start_row = 0
@@ -270,7 +271,7 @@ def build_index(
                 if stop_after_rows is not None and next_row >= stop_after_rows:
                     embeddings.flush()
                     norms.flush()
-                    _write_json_atomic(checkpoint_path, {"next_row": next_row})
+                    write_json_atomic(checkpoint_path, {"next_row": next_row})
                     raise RuntimeError(
                         f"interrupted build at row {next_row}; checkpoint written to {checkpoint_path}"
                     )
@@ -304,11 +305,11 @@ def build_index(
                 if flush_counter >= batch_flush:
                     embeddings.flush()
                     # write checkpoint
-                    _write_json_atomic(checkpoint_path, {"next_row": next_row})
+                    write_json_atomic(checkpoint_path, {"next_row": next_row})
                     flush_counter = 0
         # final flush and checkpoint
         embeddings.flush()
-        _write_json_atomic(checkpoint_path, {"next_row": next_row})
+        write_json_atomic(checkpoint_path, {"next_row": next_row})
     finally:
         frames_file.close()
 

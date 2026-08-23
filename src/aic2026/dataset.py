@@ -10,7 +10,7 @@ Responsibilities and separation:
     - raw -> canonical       -> ``aic2026.converters``
     - canonical definitions  -> ``aic2026.canonical``
     - dataset access/routing -> this module
-    - CLI                    -> ``aic2026.cli`` (interface only)
+    - HTTP API / services     -> ``aic2026.api`` (interface only)
 
 Data flow::
 

@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from aic2026.config import JinaClipConfig
+from aic2026.config import ModelConfig
 from aic2026.embeddings import Embedding, EmbeddingKind, EmbeddingSpace, Normalization
 from aic2026.image_embedder import DEFAULT_PRETRAINED, resolve_device
 
@@ -209,7 +209,7 @@ class JinaClipEncoder:
     space and use the same configured normalization convention.
     """
 
-    def __init__(self, config: JinaClipConfig) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         """Load the configured Jina CLIP model and processor.
 
         Expected input:
@@ -399,7 +399,7 @@ class JinaClipImageEmbedder:
         pretrained: str | None = None,
         device: str = "auto",
         precision: str = "fp32",
-        config: JinaClipConfig | None = None,
+        config: ModelConfig | None = None,
     ) -> None:
         """Load the configured Jina CLIP model as an image embedder.
 
@@ -412,7 +412,7 @@ class JinaClipImageEmbedder:
               resolved against the OpenCLIP config), the Jina default is used.
             - device: ``auto``, ``cpu``, ``mps``, or ``cuda``.
             - precision: ``fp32`` or ``fp16``.
-            - config: optional base :class:`JinaClipConfig` supplying defaults
+            - config: optional base :class:`ModelConfig` supplying defaults
               for normalization/preprocessing/tokenizer identity.
 
         Returns:
@@ -423,12 +423,12 @@ class JinaClipImageEmbedder:
             - ValueError: if the configured device or model output is invalid.
             - RuntimeError: if Transformers cannot load the requested model.
         """
-        base = config if isinstance(config, JinaClipConfig) else None
+        base = config if isinstance(config, ModelConfig) else None
         effective_model = model_name or DEFAULT_MODEL
         effective_pretrained = pretrained or DEFAULT_CHECKPOINT
         if effective_pretrained == DEFAULT_PRETRAINED:
             effective_pretrained = DEFAULT_CHECKPOINT
-        cfg = JinaClipConfig(
+        cfg = ModelConfig(
             backend=BACKEND,
             model_name=effective_model,
             pretrained=effective_pretrained,

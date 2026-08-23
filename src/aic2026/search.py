@@ -112,7 +112,7 @@ class SearchEngine:
         """Build an engine using the active model section of a config.
 
         The active model section is ``models.jina`` when present, otherwise
-        ``models.openclip``.
+        the config model section (production default: jina-clip-v2).
 
         Expected input:
             - config: effective configuration (see
