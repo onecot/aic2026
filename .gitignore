@@ -58,3 +58,6 @@ submission/
 
 # Agent working files
 .agents/
+
+.claude/
+p++

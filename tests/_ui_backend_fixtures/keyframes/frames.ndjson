@@ -1,0 +1,10 @@
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 1}, "pts_time": 0.0, "fps": 30.0, "frame_index": 0}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 2}, "pts_time": 0.3333333333333333, "fps": 30.0, "frame_index": 10}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 3}, "pts_time": 0.6666666666666666, "fps": 30.0, "frame_index": 20}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 4}, "pts_time": 1.0, "fps": 30.0, "frame_index": 30}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 5}, "pts_time": 1.3333333333333333, "fps": 30.0, "frame_index": 40}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 6}, "pts_time": 1.6666666666666667, "fps": 30.0, "frame_index": 50}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 7}, "pts_time": 2.0, "fps": 30.0, "frame_index": 60}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 8}, "pts_time": 2.3333333333333335, "fps": 30.0, "frame_index": 70}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 9}, "pts_time": 2.6666666666666665, "fps": 30.0, "frame_index": 80}
+{"keyframe": {"video_id": {"value": "L21_V001"}, "keyframe_ordinal": 10}, "pts_time": 3.0, "fps": 30.0, "frame_index": 90}

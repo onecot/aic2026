@@ -313,10 +313,10 @@ def _extract_video_images(
             str(video_path),
             "-vf",
             f"select='{select_expr}'",
+            # ``-fps_mode passthrough`` keeps exactly the selected frames;
+            # the legacy ``-vsync vfr`` alias was removed in ffmpeg 8.
             "-fps_mode",
             "passthrough",
-            "-vsync",
-            "vfr",
             "-f",
             "image2",
             "-q:v",

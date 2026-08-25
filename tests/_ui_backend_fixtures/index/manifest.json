@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.1",
+  "artifact_id": "qa-smoke-index",
+  "score_metric": "cosine",
+  "embedding_dim": 8,
+  "embedding_dtype": "float32",
+  "num_rows": 30,
+  "num_videos": 3,
+  "created_at": "2026-08-17T00:00:00Z",
+  "source_dataset_id": "synthetic-qa-smoke",
+  "canonical_schema_version": "1.0",
+  "embedding_space": {
+    "backend": "test-backend",
+    "model_id": "qa-smoke-placeholder",
+    "checkpoint_id": "qa-smoke-v1",
+    "space_id": "qa-smoke-space-v1",
+    "embedding_dim": 8,
+    "output_dtype": "float32",
+    "normalization": "l2",
+    "preprocessing_id": "qa-smoke-preprocess-v1",
+    "model_version": null
+  }
+}

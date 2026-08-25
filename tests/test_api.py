@@ -171,17 +171,47 @@ class TestInitialization:
             original_init(self, path)
 
         monkeypatch.setattr(FrameCatalog, "__init__", counting_init)
-        app = create_app(engine=engine, keyframes_root=keyframes_root)
+        app = create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root))
         client = TestClient(app)
         assert client.get(f"/api/videos/{CATALOG_VIDEO}").status_code == 200
         assert client.get(f"/api/videos/{CATALOG_VIDEO}/frames?limit=1").status_code == 200
-        assert built["count"] == 1  # construction only; requests reuse the instance
+        # requests never construct resources lazily; injection built exactly one
+        assert built["count"] == 1
 
-    def test_create_app_requires_engine_or_index(self, keyframes_root: Path) -> None:
-        import pytest
+    def test_managed_mode_reports_starting_before_lifespan(self, keyframes_root: Path) -> None:
+        """Without a lifespan run, health says starting and search is 503."""
+        app = create_app(keyframes_root=keyframes_root)  # no engine -> managed
+        client = TestClient(app)  # no context manager: lifespan NOT executed
+        health = client.get("/api/health")
+        assert health.status_code == 503
+        assert health.json() == {"status": "starting", "model": False, "index": False, "frame_catalog": False}
+        search = client.post("/api/search", json={"query": "x", "limit": 3})
+        assert search.status_code == 503
+        assert search.json() == {"detail": "Backend is not ready"}
 
-        with pytest.raises(ValueError, match="index_artifact"):
-            create_app(keyframes_root=keyframes_root)
+    def test_health_ready_when_services_injected(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ready", "model": True, "index": True, "frame_catalog": True}
+
+    def test_trake_search_returns_events(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        response = client.post(
+            "/api/search",
+            json={"query": "(1) a man enters the room (2) he turns on the lights", "task": "trake", "limit": 5},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert [e["event_id"] for e in body["events"]] == ["E1", "E2"]
+        for event in body["events"]:
+            assert event["predictions"], "event candidates missing"
+            assert all("keyframe_ordinal" in p for p in event["predictions"])
+            assert isinstance(event["windows"], list)
+
+    def test_search_rejects_unknown_task(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        assert client.post("/api/search", json={"query": "x", "task": "qa"}).status_code == 422
 
     def test_services_usable_without_http(self, engine: SearchEngine, keyframes_root: Path) -> None:
         from aic2026.api import RetrievalService
@@ -202,16 +232,16 @@ class TestRealDataSmoke:
         from fastapi.testclient import TestClient as _TC
 
         app = create_app(index_artifact=index_dir, keyframes_root=keyframes_dir)
-        client = _TC(app)
-        search = client.post("/api/search", json={"query": "một người đang nấu ăn trong bếp", "limit": 3})
-        assert search.status_code == 200
-        top = search.json()["results"][0]
-        video_id = top["video_id"]
-        meta = client.get(f"/api/videos/{video_id}")
-        assert meta.status_code == 200
-        center = top["frame_index"]
-        browse = client.get(f"/api/videos/{video_id}/frames?center={center}&radius=2000&limit=5")
-        assert browse.status_code == 200
-        image = client.get(f"/api/frames/{video_id}/{center}")
-        assert image.status_code == 200
-        assert image.headers["content-type"].startswith("image/")
+        with _TC(app) as client:  # context manager runs the startup lifespan
+            search = client.post("/api/search", json={"query": "một người đang nấu ăn trong bếp", "limit": 3})
+            assert search.status_code == 200
+            top = search.json()["results"][0]
+            video_id = top["video_id"]
+            meta = client.get(f"/api/videos/{video_id}")
+            assert meta.status_code == 200
+            center = top["frame_index"]
+            browse = client.get(f"/api/videos/{video_id}/frames?center={center}&radius=2000&limit=5")
+            assert browse.status_code == 200
+            image = client.get(f"/api/frames/{video_id}/{center}")
+            assert image.status_code == 200
+            assert image.headers["content-type"].startswith("image/")

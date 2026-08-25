@@ -17,12 +17,12 @@ pip install -e ".[api]"
 ```bash
 # production defaults: index data/interim/indexes/jina-v2-full,
 # keyframes from configs/default.yaml (adaptive_sbd_v1)
-uvicorn aic2026.api:create_default_app --factory --port 8000
+uvicorn aic2026.server:app --host 127.0.0.1 --port 8000
 
 # explicit overrides
 AIC_INDEX_DIR=data/interim/indexes/jina-v2-full \
 AIC_KEYFRAMES_DIR=data/keyframes/adaptive_sbd_v1 \
-uvicorn aic2026.api:create_default_app --factory --port 8000
+uvicorn aic2026.server:app --host 127.0.0.1 --port 8000
 ```
 
 Programmatic use (tests, notebooks, non-web consumers):
@@ -41,7 +41,30 @@ startup (`create_app`); requests never reload them.
 
 ## Endpoints
 
+### `GET /api/health`
+
+```json
+{"status": "ready", "model": true, "index": true, "frame_catalog": true}
+```
+
+- HTTP 200 when the runtime is fully initialized (Jina encoder, index, and
+  FrameCatalog load exactly once at server startup).
+- HTTP 503 with `{"status": "starting", ...}` while initialization is in
+  flight or after a failed startup. Retrieval endpoints return
+  `503 {"detail": "Backend is not ready"}` until ready; they never construct
+  resources lazily per request.
+
 ### `POST /api/search`
+
+Optional `task`:
+
+- `"kis"` (default): general frame retrieval.
+- `"trake"`: event-centric search. The response additionally contains
+  `"events"`, each `{event_id, event_text, predictions: [hit...],
+  windows: [{video_id, frame_start, frame_end, score, rank}]}` — the same
+  shape as TRAKE prediction artifacts (`results` is empty for this task).
+
+
 
 ```json
 {"query": "một người đang nấu ăn trong bếp", "limit": 100}
@@ -117,6 +140,7 @@ image file → `404`.
 | Status | Meaning |
 | ------ | ------- |
 | 400 | invalid query parameters (pagination/radius) |
+| 503 | backend starting or startup failed (health: `status="starting"`) |
 | 404 | unknown video / unknown frame / unavailable image |
 | 422 | invalid request body |
 | 500 | unexpected internal failure |
