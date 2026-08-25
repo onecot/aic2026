@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0f0f13;
+  --color-panel: #17171d;
+  --color-edge: #26262e;
+  --color-ink: #e8e8ec;
+  --color-dim: #8f8f9a;
+  --color-accent: #4f8cff;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 14px;
+  }
+  ::selection {
+    background: var(--color-accent);
+    color: black;
+  }
+  /* Dense dark scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-edge) transparent;
+  }
+}

@@ -41,6 +41,43 @@ startup (`create_app`); requests never reload them.
 
 ## Endpoints
 
+### `GET /api/system`
+
+Full runtime description for UIs (loaded objects are the source of truth;
+values are never invented, and no filesystem paths are exposed):
+
+```json
+{
+  "status": "ready",
+  "retrieval": {
+    "model":   {"name": "jina-clip-v2", "backend": "jina-clip"},
+    "index":   {"id": "jina-v2-full", "total_keyframes": 148322,
+                "total_videos": 873, "embedding_dimension": 1024,
+                "similarity": "cosine"},
+    "keyframes": {"version": "adaptive_sbd_v1",
+                  "total_keyframes": 148322, "total_videos": 873}
+  },
+  "features": {
+    "visual_embedding": true, "ocr": false, "asr": false,
+    "metadata_search": false, "temporal_navigation": true
+  },
+  "generation": {"vlm": {"enabled": false, "model": "jinaai/jina-vlm-mlx",
+                          "load_policy": "lazy"}}
+}
+```
+
+Sources: `model` from the loaded encoder's embedding space; `index` fields
+from the loaded index manifest; `keyframes.total_*` from the FrameCatalog
+(runtime truth) and `version` from the keyframe artifact identity manifest
+(`null` when absent). Feature flags describe **active runtime
+capabilities** — OCR/ASR/metadata search are `false` because no serving
+path exists for them today. `generation.vlm.enabled` means *callable
+through this API right now* (currently `false`; the model is lazy
+server-side and no QA endpoint exists yet).
+
+Readiness: same semantics as retrieval endpoints — `503` with the
+structured starting payload until initialization completes.
+
 ### `GET /api/health`
 
 ```json
@@ -63,6 +100,30 @@ Optional `task`:
   `"events"`, each `{event_id, event_text, predictions: [hit...],
   windows: [{video_id, frame_start, frame_end, score, rank}]}` — the same
   shape as TRAKE prediction artifacts (`results` is empty for this task).
+
+Additive per-query telemetry is returned in `meta`:
+
+```json
+"meta": {
+  "task": "kis",
+  "returned": 100,
+  "timing": {"total_ms": 247.3, "encode_ms": 182.1, "retrieve_ms": 41.0},
+  "signals": {"visual_embedding": true, "ocr": false, "asr": false,
+               "metadata": false, "temporal_reranking": false}
+}
+```
+
+- `returned`: number of top-level items (hits for KIS; **events** for
+  TRAKE).
+- `timing.total_ms`: full handling time of the request's search path.
+- `timing.encode_ms` / `retrieve_ms`: measured split for KIS; `null` for
+  TRAKE where per-event encoding cannot be separated cleanly. Values are
+  milliseconds rounded to 0.1; unsupported splits are `null`, never faked.
+- `signals`: which capabilities actively produced this response (mirrors
+  `/api/system` feature flags; `temporal_reranking` does not exist today).
+
+The field is additive: consumers may ignore it, and result schemas are
+unchanged.
 
 
 

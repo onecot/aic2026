@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -48,6 +49,7 @@ from aic2026.config import Config, load_config
 from aic2026.frame_catalog import FrameCatalog
 from aic2026.frame_images import find_keyframe_image
 from aic2026.retrieval import RetrievalCandidate
+from aic2026.runtime_meta import build_search_meta, build_system_metadata
 from aic2026.search import SearchEngine
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,27 @@ class RetrievalService:
         """
         return list(self._engine.search_text(query, top_k=limit))
 
+    def search_timed(
+        self, query: str, limit: int = 100
+    ) -> tuple[list[RetrievalCandidate], float, float]:
+        """Search with a clean encode/retrieve timing split.
+
+        Returns:
+            - ``(candidates, encode_ms, retrieve_ms)``; ranking behavior is
+              identical to :meth:`search`.
+
+        Raises:
+            - ValueError: same contract as :meth:`search`.
+        """
+        start = time.perf_counter()
+        embedding = self._engine.encode_query(query)
+        encode_ms = (time.perf_counter() - start) * 1000.0
+
+        retrieve_start = time.perf_counter()
+        candidates = list(self._engine.search_embedding(embedding, top_k=limit))
+        retrieve_ms = (time.perf_counter() - retrieve_start) * 1000.0
+        return candidates, encode_ms, retrieve_ms
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -148,12 +171,40 @@ class EventPayload(BaseModel):
     windows: list[WindowPayload]
 
 
+class TimingPayload(BaseModel):
+    """Per-query timings in milliseconds (rounded; None when not measurable)."""
+
+    total_ms: float
+    encode_ms: float | None = None
+    retrieve_ms: float | None = None
+
+
+class SignalsPayload(BaseModel):
+    """Signals that actively contributed to this response."""
+
+    visual_embedding: bool
+    ocr: bool
+    asr: bool
+    metadata: bool
+    temporal_reranking: bool
+
+
+class MetaPayload(BaseModel):
+    """Additive per-query telemetry (never required by consumers)."""
+
+    task: str
+    returned: int
+    timing: TimingPayload
+    signals: SignalsPayload
+
+
 class SearchResponse(BaseModel):
     """Response body for ``POST /api/search``."""
 
     query: str
     results: list[SearchHit]
     events: list[EventPayload] | None = None
+    meta: MetaPayload | None = None
 
 
 class VideoMetadataResponse(BaseModel):
@@ -211,6 +262,58 @@ def _frame(timing: Any) -> FrameRecord:
         pts_time=float(timing.pts_time),
         fps=float(timing.fps),
     )
+
+
+class SystemModelInfo(BaseModel):
+    name: str
+    backend: str
+
+
+class SystemIndexInfo(BaseModel):
+    id: str
+    total_keyframes: int
+    total_videos: int
+    embedding_dimension: int
+    similarity: str
+
+
+class SystemKeyframesInfo(BaseModel):
+    version: str | None = None
+    total_keyframes: int
+    total_videos: int
+
+
+class SystemRetrievalInfo(BaseModel):
+    model: SystemModelInfo
+    index: SystemIndexInfo
+    keyframes: SystemKeyframesInfo
+
+
+class SystemVlmInfo(BaseModel):
+    enabled: bool
+    model: str | None = None
+    load_policy: str
+
+
+class SystemGenerationInfo(BaseModel):
+    vlm: SystemVlmInfo
+
+
+class SystemFeatures(BaseModel):
+    visual_embedding: bool
+    ocr: bool
+    asr: bool
+    metadata_search: bool
+    temporal_navigation: bool
+
+
+class SystemResponse(BaseModel):
+    """Response body for ``GET /api/system``."""
+
+    status: Literal["ready"]
+    retrieval: SystemRetrievalInfo
+    features: SystemFeatures
+    generation: SystemGenerationInfo
 
 
 # ---------------------------------------------------------------------------
@@ -355,10 +458,22 @@ def create_app(
             content={"status": "starting", "model": False, "index": False, "frame_catalog": False},
         )
 
+    @app.get("/api/system", response_model=SystemResponse)
+    def system() -> SystemResponse:
+        _require_ready()
+        payload = build_system_metadata(
+            engine=app.state.engine,
+            catalog=app.state.catalog,
+            keyframes_root=app.state.keyframes_root,
+            vlm_enabled=False,  # VLM stays lazy server-side; no QA endpoint yet
+        )
+        return SystemResponse(**payload)
+
     @app.post("/api/search", response_model=SearchResponse)
     def search(payload: SearchRequest) -> SearchResponse:
         _require_ready()
         retrieval: RetrievalService = app.state.retrieval
+        total_start = time.perf_counter()
         if payload.task == "trake":
             from aic2026.text_query import TextQuery
             from aic2026.trake import search_trake
@@ -385,9 +500,29 @@ def create_app(
                 )
                 for event in result.events
             ]
-            return SearchResponse(query=payload.query, results=[], events=events)
-        hits = [_hit(candidate) for candidate in retrieval.search(payload.query, payload.limit)]
-        return SearchResponse(query=payload.query, results=hits)
+            total_ms = (time.perf_counter() - total_start) * 1000.0
+            # Per-event encoding happens inside the TRAKE core; a clean
+            # encode/retrieve split is not measurable here and is omitted.
+            meta = MetaPayload(
+                **build_search_meta(task="trake", returned=len(events), total_ms=total_ms)
+            )
+            return SearchResponse(query=payload.query, results=[], events=events, meta=meta)
+
+        candidates, encode_ms, retrieve_ms = retrieval.search_timed(
+            payload.query, payload.limit
+        )
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        hits = [_hit(candidate) for candidate in candidates]
+        meta = MetaPayload(
+            **build_search_meta(
+                task="kis",
+                returned=len(hits),
+                total_ms=total_ms,
+                encode_ms=encode_ms,
+                retrieve_ms=retrieve_ms,
+            )
+        )
+        return SearchResponse(query=payload.query, results=hits, meta=meta)
 
     @app.get("/api/videos/{video_id}", response_model=VideoMetadataResponse)
     def video_metadata(video_id: str) -> VideoMetadataResponse:

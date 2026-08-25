@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import shutil
 
 pytest.importorskip("fastapi", reason="the api extra is not installed")
 pytest.importorskip("httpx", reason="httpx is required for the test client")
@@ -245,3 +246,122 @@ class TestRealDataSmoke:
             image = client.get(f"/api/frames/{video_id}/{center}")
             assert image.status_code == 200
             assert image.headers["content-type"].startswith("image/")
+
+
+# ==========================================================================
+# Section: system metadata + per-query telemetry (Phase 4B)
+# ==========================================================================
+
+
+class TestSystemEndpoint:
+    def test_system_ready_payload_from_runtime(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root), keyframes_root=keyframes_root))
+        response = client.get("/api/system")
+        assert response.status_code == 200
+        body = response.json()
+
+        assert body["status"] == "ready"
+        # model identity comes from the loaded engine's embedding space
+        space = engine.embedding_space
+        assert body["retrieval"]["model"] == {"name": space.model_id, "backend": space.backend}
+        # index identity from the loaded manifest
+        manifest = engine.manifest
+        index = body["retrieval"]["index"]
+        assert index == {
+            "id": manifest.artifact_id,
+            "total_keyframes": manifest.num_rows,
+            "total_videos": manifest.num_videos,
+            "embedding_dimension": manifest.embedding_dim,
+            "similarity": manifest.score_metric,
+        }
+        # keyframe identity: catalog is the runtime source of truth
+        keyframes = body["retrieval"]["keyframes"]
+        assert keyframes["total_videos"] == 1  # fixture catalog holds one video
+        assert keyframes["total_keyframes"] == 10
+        assert keyframes["version"] in (None, "any")  # fixture has no identity manifest
+        # active features only — no OCR/ASR/metadata retrieval exists today
+        assert body["features"] == {
+            "visual_embedding": True,
+            "ocr": False,
+            "asr": False,
+            "metadata_search": False,
+            "temporal_navigation": True,
+        }
+        vlm = body["generation"]["vlm"]
+        assert vlm["enabled"] is False  # not callable through the API yet
+        assert vlm["load_policy"] == "lazy"
+        assert isinstance(vlm["model"], str)
+
+    def test_system_keyframes_version_from_identity_manifest(
+        self, engine: SearchEngine, keyframes_root: Path, tmp_path: Path
+    ) -> None:
+        import json
+
+        root = tmp_path / "kf"
+        shutil.copytree(keyframes_root, root)
+        (root / "manifest.json").write_text(
+            json.dumps({"artifact_id": "adaptive_sbd_v1", "source_frames": "/secret/path.ndjson"}),
+            encoding="utf-8",
+        )
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(root), keyframes_root=root))
+        body = client.get("/api/system").json()
+        assert body["retrieval"]["keyframes"]["version"] == "adaptive_sbd_v1"
+        # path-like provenance never leaks into the payload
+        serialized = json.dumps(body)
+        assert "/secret" not in serialized
+        assert str(tmp_path) not in serialized
+        assert "/" + "Users" not in serialized
+
+    def test_system_not_ready_returns_starting_503(self, keyframes_root: Path) -> None:
+        app = create_app(keyframes_root=keyframes_root)  # managed, no lifespan run
+        client = TestClient(app)
+        response = client.get("/api/system")
+        assert response.status_code == 503
+
+
+class TestSearchTelemetry:
+    def test_kis_meta_present_and_accurate(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        body = client.post("/api/search", json={"query": "a red boat", "limit": 7}).json()
+        meta = body["meta"]
+        assert meta["task"] == "kis"
+        assert meta["returned"] == len(body["results"]) == 7
+        timing = meta["timing"]
+        assert isinstance(timing["total_ms"], float)
+        assert timing["encode_ms"] > 0 and timing["retrieve_ms"] > 0
+        # rounded values: retrieve must not exceed the enclosing total
+        assert timing["retrieve_ms"] <= timing["total_ms"] + 0.1
+        assert meta["signals"] == {
+            "visual_embedding": True,
+            "ocr": False,
+            "asr": False,
+            "metadata": False,
+            "temporal_reranking": False,
+        }
+        # existing fields untouched and deterministic across identical calls
+        second = client.post("/api/search", json={"query": "a red boat", "limit": 7}).json()
+        assert [r for r in body["results"]] == [r for r in second["results"]]
+        assert body["query"] == "a red boat"
+
+    def test_trake_meta_counts_events(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        body = client.post(
+            "/api/search",
+            json={"query": "(1) a man enters the room (2) lights on", "task": "trake", "limit": 5},
+        ).json()
+        meta = body["meta"]
+        assert meta["task"] == "trake"
+        assert meta["returned"] == len(body["events"]) == 2
+        assert isinstance(meta["timing"]["total_ms"], float)
+        assert meta["timing"]["encode_ms"] is None  # split not measurable per-event
+        # existing event contract unchanged alongside meta
+        assert [e["event_id"] for e in body["events"]] == ["E1", "E2"]
+
+    def test_meta_absent_fields_do_not_break_old_consumers(
+        self, engine: SearchEngine, keyframes_root: Path
+    ) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        body = client.post("/api/search", json={"query": "x", "limit": 3}).json()
+        assert set(body) >= {"query", "results", "meta"}
+        assert all(set(hit) == {"rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
+                   for hit in body["results"])

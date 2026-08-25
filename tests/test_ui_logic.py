@@ -165,8 +165,14 @@ class _StubEngine:
     def encode_text(self, text: str):
         return self._inner.encode_text(text)
 
+    def encode_query(self, text: str):
+        return self._inner.encode_query(text)
+
     def search_text(self, text: str, *, top_k=None):
         return self._inner.search_text(text, top_k=top_k)
+
+    def search_embedding(self, embedding, *, top_k=None):
+        return self._inner.search_embedding(embedding, top_k=top_k)
 
 
 @pytest.fixture(scope="module")
@@ -261,6 +267,9 @@ def test_client_search_returns_hits_with_full_identity(backend: str) -> None:
 
     body = api_client.search("a red boat on the water", limit=5)
     assert len(body["results"]) == 5
+    # additive telemetry tolerated/preserved by the client layer
+    assert body["meta"]["task"] == "kis"
+    assert isinstance(body["meta"]["timing"]["total_ms"], float)
     hit = body["results"][0]
     assert set(hit) >= {"rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
     ranks = [h["rank"] for h in body["results"]]
