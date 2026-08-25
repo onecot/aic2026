@@ -52,29 +52,87 @@ export function SearchBar({ pending, meta }: SearchBarProps) {
           submitSearch();
         }}
       >
-        <input
-          id="query-input"
-          ref={inputRef}
-          value={draftQuery}
-          onChange={(e) => setDraftQuery(e.target.value)}
-          placeholder={task === "trake" ? "(1) first event… (2) second event…" : "Describe what you are looking for…"}
-          spellCheck={false}
-          aria-label="Query"
-          className="min-w-0 flex-1 rounded border border-edge bg-panel px-3 py-1.5 text-sm outline-none focus:border-accent"
-        />
+        <div className="relative min-w-0 flex-1">
+          <input
+            id="query-input"
+            ref={inputRef}
+            value={draftQuery}
+            onChange={(e) => setDraftQuery(e.target.value)}
+            placeholder={
+              task === "trake"
+                ? "Ví dụ: (1) người đi bộ (2) xe máy rẽ phải…"
+                : task === "qa"
+                ? "Ví dụ: người đang làm gì? có bao nhiêu xe?…"
+                : "Nhập nội dung cần tìm kiếm (nhấn / để focus)…"
+            }
+            spellCheck={false}
+            aria-label="Query"
+            className="w-full rounded border border-edge bg-panel px-3 py-1.5 pr-8 text-sm outline-none focus:border-accent"
+          />
+          {draftQuery.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setDraftQuery("");
+                inputRef.current?.focus();
+              }}
+              title="Xóa nhanh (Clear)"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-dim hover:text-ink text-sm px-1 py-0.5"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <button
           type="submit"
           disabled={pending || draftQuery.trim().length === 0}
-          className="rounded bg-accent px-4 py-1.5 text-sm font-medium text-black disabled:opacity-40"
+          className="rounded bg-accent px-4 py-1.5 text-sm font-medium text-black disabled:opacity-40 hover:opacity-90 transition-opacity"
         >
-          {pending ? "Searching…" : "Search"}
+          {pending ? "Đang tìm…" : "Search"}
         </button>
       </form>
 
+      {/* Quick Example Chips */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-dim">
+        <span className="text-dim/80">Gợi ý mẫu:</span>
+        {(task === "trake"
+          ? [
+              "(1) người đi bộ (2) xe máy dừng lại",
+              "(1) xe ô tô chạy (2) người qua đường",
+              "(1) học sinh chào cờ (2) học sinh vào lớp",
+            ]
+          : task === "qa"
+          ? [
+              "người đang làm gì?",
+              "có bao nhiêu chiếc xe?",
+              "người mặc áo màu gì?",
+              "địa điểm này ở đâu?",
+            ]
+          : [
+              "người phụ nữ mặc áo dài",
+              "xe ô tô trên đường phố",
+              "học sinh trong lớp học",
+              "ngôi nhà và cây xanh",
+            ]
+        ).map((example) => (
+          <button
+            key={example}
+            type="button"
+            onClick={() => {
+              setDraftQuery(example);
+              inputRef.current?.focus();
+            }}
+            className="rounded border border-edge/80 bg-panel/70 px-2 py-0.5 text-dim hover:border-accent hover:text-ink transition-colors"
+          >
+            {example}
+          </button>
+        ))}
+      </div>
+
       {meta && (
-        <p className="mt-1 flex items-baseline gap-2 text-xs text-dim">
+        <div className="mt-1 flex items-baseline gap-2 text-xs text-dim">
           <span>
-            {meta.returned} {meta.task === "trake" ? "events" : "results"} · {formatMs(meta.timing.total_ms)}
+            {meta.returned} {meta.task === "trake" ? "sự kiện" : "kết quả"} · {formatMs(meta.timing.total_ms)}
           </span>
           <details className="ml-auto">
             <summary className="cursor-pointer select-none hover:text-ink">telemetry</summary>
@@ -99,7 +157,7 @@ export function SearchBar({ pending, meta }: SearchBarProps) {
               ))}
             </span>
           </details>
-        </p>
+        </div>
       )}
     </section>
   );

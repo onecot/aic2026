@@ -1,18 +1,12 @@
 import { useEffect } from "react";
-import {
-  MAX_PREDICTIONS,
-  ANSWER_MAX_LENGTH,
-  predictionIssue,
-  statusGlyph,
-  type QueryWorkspace,
-} from "../../state/submission";
+import { MAX_PREDICTIONS, predictionIssue, statusGlyph, type QueryWorkspace } from "../../state/submission";
 import { useActiveQuery, useUiStore } from "../../state/uiStore";
 
 function formatClock(ms: number): string {
   return new Date(ms).toLocaleTimeString();
 }
 
-/** Persistent bottom panel: the active query's prediction queue. */
+/** Persistent bottom panel: the active TRAKE query's anchor-picking queue. */
 export function PredictionQueue() {
   const query = useActiveQuery();
   const notice = useUiStore((s) => s.notice);
@@ -20,7 +14,6 @@ export function PredictionQueue() {
   const selectFrame = useUiStore((s) => s.selectFrame);
   const removePrediction = useUiStore((s) => s.removePrediction);
   const movePrediction = useUiStore((s) => s.movePrediction);
-  const setQaAnswer = useUiStore((s) => s.setQaAnswer);
   const pick = useUiStore((s) => s.trakePick);
   const chooseTraKeAnchor = useUiStore((s) => s.chooseTraKeAnchor);
   const setTraKeAnchor = useUiStore((s) => s.setTraKeAnchor);
@@ -34,7 +27,7 @@ export function PredictionQueue() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  if (query === undefined) return null;
+  if (query === undefined || query.task !== "trake") return null;
   const count = query.predictions.length;
 
   return (
@@ -75,22 +68,7 @@ export function PredictionQueue() {
               >
                 <span className="w-5 shrink-0 text-right text-dim tabular-nums">{index + 1}</span>
 
-                {query.task !== "trake" && "frameIndex" in prediction && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      selectFrame({
-                        videoId: prediction.videoId,
-                        frameIndex: prediction.frameIndex,
-                      })
-                    }
-                    className="tabular-nums hover:text-accent"
-                    title="Inspect this prediction"
-                  >
-                    {prediction.videoId} / {prediction.frameIndex}
-                  </button>
-                )}
-                {query.task === "trake" && "frameIndices" in prediction && (
+                {"frameIndices" in prediction && (
                   <span className="flex min-w-0 flex-1 flex-col gap-1">
                     <span className="tabular-nums">{prediction.videoId}</span>
                     {prediction.frameIndices.map((value, eventIdx) => {
@@ -146,31 +124,6 @@ export function PredictionQueue() {
                       );
                     })}
                     {issue !== null && <span>— {issue}</span>}
-                  </span>
-                )}
-
-                {query.task === "qa" && "answer" in prediction && (
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <input
-                      value={prediction.answer}
-                      onChange={(e) => setQaAnswer(query.id, index, e.target.value)}
-                      placeholder="answer…"
-                      aria-label={`Answer for prediction ${index + 1}`}
-                      spellCheck={false}
-                      className={`w-full max-w-xs rounded border bg-panel px-1.5 py-0.5 outline-none focus:border-accent ${
-                        prediction.answer.length > ANSWER_MAX_LENGTH
-                          ? "border-red-500"
-                          : "border-edge"
-                      }`}
-                    />
-                    <span
-                      className={`tabular-nums ${
-                        prediction.answer.length > ANSWER_MAX_LENGTH ? "text-red-400" : "text-dim"
-                      }`}
-                    >
-                      {prediction.answer.length}/{ANSWER_MAX_LENGTH}
-                      {issue !== null ? ` — ${issue}` : ""}
-                    </span>
                   </span>
                 )}
 

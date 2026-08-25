@@ -226,6 +226,12 @@ class JinaClipEncoder:
         self._config = config
         self._torch, transformers = _load_dependencies()
         self._device = _resolve_device(config.device, self._torch)
+        if "cpu" in str(self._device):
+            import os
+            try:
+                self._torch.set_num_threads(max(1, min(8, os.cpu_count() or 4)))
+            except Exception:
+                pass
         self._model = transformers.AutoModel.from_pretrained(
             config.pretrained,
             trust_remote_code=True,
@@ -253,6 +259,7 @@ class JinaClipEncoder:
             preprocessing_id=f"{config.preprocessing_id};tokenizer={config.tokenizer_id}",
             model_version=_model_version(),
         )
+        self._text_cache: dict[str, Embedding] = {}
 
     @property
     def embedding_space(self) -> EmbeddingSpace:
@@ -276,7 +283,12 @@ class JinaClipEncoder:
         Raises:
             - ValueError: if text is invalid.
         """
-        return self.encode_text_batch([text])[0]
+        trimmed = text.strip()
+        if trimmed in self._text_cache:
+            return self._text_cache[trimmed]
+        emb = self.encode_text_batch([text])[0]
+        self._text_cache[trimmed] = emb
+        return emb
 
     def encode_text_batch(self, texts: Sequence[str]) -> list[Embedding]:
         """Encode text queries in one model invocation.
@@ -291,15 +303,25 @@ class JinaClipEncoder:
             - ValueError: if no text is supplied or an item is invalid.
         """
         values = self._validate_texts(texts)
+        uncached_indices = [i for i, v in enumerate(values) if v not in self._text_cache]
+        if not uncached_indices:
+            return [self._text_cache[v] for v in values]
+
+        uncached_values = [values[i] for i in uncached_indices]
         encoded = self._processor(
-            text=values,
+            text=uncached_values,
             return_tensors="pt",
             padding=True,
             truncation=True,
         ).to(self._device)
         with self._torch.inference_mode():
             vectors = self._model.get_text_features(**encoded)
-        return self._make_embeddings("text", vectors, len(values))
+        embs = self._make_embeddings("text", vectors, len(uncached_values))
+
+        for v, emb in zip(uncached_values, embs):
+            self._text_cache[v] = emb
+
+        return [self._text_cache[v] for v in values]
 
     def encode_image(self, image: object) -> Embedding:
         """Encode one backend-native image input.
@@ -322,9 +344,6 @@ class JinaClipEncoder:
             - images: a non-empty sequence accepted by the configured
               processor.
 
-        Returns:
-            - Image embeddings in the same order as ``images``.
-
         Raises:
             - ValueError: if no image is supplied or model output is invalid.
         """
@@ -333,7 +352,10 @@ class JinaClipEncoder:
         encoded = self._processor(images=list(images), return_tensors="pt").to(self._device)
         with self._torch.inference_mode():
             vectors = self._model.get_image_features(**encoded)
-        return self._make_embeddings("image", vectors, len(images))
+        results = self._make_embeddings("image", vectors, len(images))
+        if "mps" in str(self._device) and hasattr(self._torch, "mps") and hasattr(self._torch.mps, "empty_cache"):
+            self._torch.mps.empty_cache()
+        return results
 
     def _make_embeddings(self, kind: EmbeddingKind, vectors: Any, expected_rows: int) -> list[Embedding]:
         """Convert one batched model output into validated contract records.

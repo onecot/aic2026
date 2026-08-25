@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from aic2026.config import Config
 from aic2026.embeddings import Embedding, EmbeddingEncoder
 from aic2026.index_artifact import IndexManifest
@@ -228,3 +230,17 @@ class SearchEngine:
               strict mode.
         """
         return self.search_embedding(self.encode_query(text), top_k=top_k)
+
+    def search_similar(
+        self, video_id: str, frame_index: int, *, top_k: int | None = None
+    ) -> tuple[RetrievalCandidate, ...]:
+        """Find visually similar keyframes using the embedding of an indexed frame."""
+        vec = self._retriever.get_frame_embedding(video_id, frame_index)
+        if vec is None:
+            raise ValueError(f"Frame {video_id}:{frame_index} not found in index")
+        emb = Embedding(
+            kind="image",
+            vector=np.asarray(vec, dtype=np.float32),
+            space=self._retriever.manifest.embedding_space,
+        )
+        return self.search_embedding(emb, top_k=top_k)

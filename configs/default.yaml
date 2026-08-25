@@ -26,7 +26,7 @@ models:
   backend: jina-clip
   model_name: jina-clip-v2
   pretrained: jinaai/jina-clip-v2
-  device: auto
+  device: cpu
   precision: fp32
   normalization: l2
   # Project-managed processing/tokenizer revision labels; bump them when

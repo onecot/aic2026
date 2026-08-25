@@ -19,6 +19,8 @@ export type Task = "kis" | "qa" | "trake";
 export interface KisPrediction {
   videoId: string;
   frameIndex: number;
+  /** Original retrieval score, kept for display only (not exported). */
+  score?: number;
 }
 
 /** QA prediction: one frame plus its own independent answer. */
@@ -26,6 +28,8 @@ export interface QaPrediction {
   videoId: string;
   frameIndex: number;
   answer: string;
+  /** Original retrieval score, kept for display only (not exported). */
+  score?: number;
 }
 
 /**

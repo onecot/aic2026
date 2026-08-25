@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { FrameRecord } from "../api/types";
+import type { FrameRecord, SearchHit } from "../api/types";
 import type { TraKeWindow } from "../api/types";
 import {
   MAX_PREDICTIONS,
@@ -42,6 +42,8 @@ export interface UiState {
   /** Transient user-facing message (limit reached, duplicates, …). */
   notice: { message: string; at: number } | null;
   savedAt: number | null;
+  gridCols: 3 | 4 | 6;
+  layoutMode: "flat" | "grouped";
   /**
    * Active TRAKE anchor-picking target (prediction row + event slot in the
    * ACTIVE query). While set, the inspector's primary action assigns the
@@ -56,6 +58,8 @@ export interface UiState {
   /** Switch to the most recent query of a task, creating one if needed. */
   setTask: (task: Task) => void;
   setView: (view: View) => void;
+  setGridCols: (cols: 3 | 4 | 6) => void;
+  setLayoutMode: (mode: "flat" | "grouped") => void;
 
   // search (active query scoped)
   setDraftQuery: (query: string) => void;
@@ -81,13 +85,20 @@ export interface UiState {
     eventIndex: number,
     frameIndex: number | null,
   ) => void;
-  addPredictionFromSelected: () => boolean;
   /** Add one window as an initial editable SUGGESTION for a TRAKE query. */
   addTraKeSuggestion: (window: TraKeWindow, events: Parameters<typeof suggestTraKeAnchors>[1]) => boolean;
+  /**
+   * Replace the active kis/qa query's predictions with fresh search hits
+   * (rank order, capped at MAX_PREDICTIONS). No-op for trake queries.
+   */
+  syncPredictionsFromSearch: (hits: SearchHit[]) => void;
   removePrediction: (index: number) => void;
   movePrediction: (index: number, direction: -1 | 1) => void;
+  /** Move one prediction to an arbitrary target index (splice-move). */
+  reorderPrediction: (from: number, to: number) => void;
   setQaAnswer: (queryId: string, index: number, answer: string) => void;
   setSavedAt: (savedAt: number) => void;
+  notify: (message: string) => void;
 }
 
 function nextQueryId(queryOrder: string[]): string {
@@ -125,12 +136,16 @@ export function initialUiState(): Omit<
   | "clearInspector"
   | "setTemporalFrames"
   | "stepTemporal"
-  | "addPredictionFromSelected"
   | "addTraKeSuggestion"
+  | "syncPredictionsFromSearch"
   | "removePrediction"
   | "movePrediction"
+  | "reorderPrediction"
   | "setQaAnswer"
   | "setSavedAt"
+  | "setGridCols"
+  | "setLayoutMode"
+  | "notify"
 > {
   return {
     queries: {},
@@ -141,6 +156,8 @@ export function initialUiState(): Omit<
     temporalFrames: [],
     notice: null,
     savedAt: null,
+    gridCols: 4,
+    layoutMode: "flat",
     trakePick: null,
   };
 }
@@ -182,13 +199,24 @@ export const useUiStore = create<UiState>()(
   },
 
   setTask: (task) => {
-    const { queryOrder, queries } = get();
-    const match = [...queryOrder].reverse().find((id) => queries[id]?.task === task);
-    if (match !== undefined) {
-      set({ activeQueryId: match, selected: null });
-      return;
+    const { activeQueryId, queries, queryOrder } = get();
+    const active = activeQueryId !== null ? queries[activeQueryId] : undefined;
+    if (active !== undefined && active.task === task) return;
+
+    for (let i = queryOrder.length - 1; i >= 0; i -= 1) {
+      const id = queryOrder[i]!;
+      if (queries[id]?.task === task) {
+        set({ activeQueryId: id, selected: null });
+        return;
+      }
     }
-    get().newQuery(task);
+    const id = nextQueryId(queryOrder);
+    set((state) => ({
+      queries: { ...state.queries, [id]: emptyQuery(id, task) },
+      queryOrder: [...state.queryOrder, id],
+      activeQueryId: id,
+      selected: null,
+    }));
   },
 
   setView: (view) => set({ view }),
@@ -258,43 +286,6 @@ export const useUiStore = create<UiState>()(
         score: undefined,
       },
     });
-  },
-
-  addPredictionFromSelected: () => {
-    const state = get();
-    const active = state.activeQueryId;
-    const query = active !== null ? state.queries[active] : undefined;
-    const { selected } = state;
-    if (query === undefined || selected === null) return false;
-
-    if (query.predictions.length >= MAX_PREDICTIONS) {
-      set({
-        notice: {
-          message: `Limit reached: max ${MAX_PREDICTIONS} predictions per BTC query.`,
-          at: Date.now(),
-        },
-      });
-      return false;
-    }
-
-    let prediction: Prediction;
-    if (query.task === "qa") {
-      prediction = { videoId: selected.videoId, frameIndex: selected.frameIndex, answer: "" };
-    } else {
-      prediction = { videoId: selected.videoId, frameIndex: selected.frameIndex } satisfies KisPrediction;
-    }
-    const key = predictionKey(query.task, prediction);
-    if (query.predictions.some((p) => predictionKey(query.task, p) === key)) {
-      set({ notice: { message: "Already added to this query's queue.", at: Date.now() } });
-      return false;
-    }
-    set((s) => ({
-      queries: {
-        ...s.queries,
-        [active!]: { ...query, predictions: [...query.predictions, prediction] },
-      },
-    }));
-    return true;
   },
 
   chooseTraKeAnchor: (predictionIndex, eventIndex) =>
@@ -380,6 +371,22 @@ export const useUiStore = create<UiState>()(
     return true;
   },
 
+  syncPredictionsFromSearch: (hits) =>
+    set((state) => {
+      const active = state.activeQueryId;
+      const query = active !== null ? state.queries[active] : undefined;
+      if (query === undefined || query.task === "trake") return {};
+      const capped = hits.slice(0, MAX_PREDICTIONS);
+      const predictions: Prediction[] = capped.map((hit) =>
+        query.task === "qa"
+          ? { videoId: hit.video_id, frameIndex: hit.frame_index, score: hit.score, answer: "" }
+          : ({ videoId: hit.video_id, frameIndex: hit.frame_index, score: hit.score } satisfies KisPrediction),
+      );
+      return {
+        queries: { ...state.queries, [active!]: { ...query, predictions } },
+      };
+    }),
+
   removePrediction: (index) =>
     set((state) => {
       const active = state.activeQueryId;
@@ -411,6 +418,21 @@ export const useUiStore = create<UiState>()(
       };
     }),
 
+  reorderPrediction: (from, to) =>
+    set((state) => {
+      const active = state.activeQueryId;
+      const query = active !== null ? state.queries[active] : undefined;
+      if (query === undefined) return {};
+      const count = query.predictions.length;
+      if (from === to || from < 0 || from >= count || to < 0 || to >= count) return {};
+      const predictions = [...query.predictions];
+      const [moved] = predictions.splice(from, 1);
+      predictions.splice(to, 0, moved!);
+      return {
+        queries: { ...state.queries, [active!]: { ...query, predictions } },
+      };
+    }),
+
   setQaAnswer: (queryId, index, answer) =>
     set((state) => {
       const query = state.queries[queryId];
@@ -425,6 +447,9 @@ export const useUiStore = create<UiState>()(
     }),
 
   setSavedAt: (savedAt) => set({ savedAt }),
+  setGridCols: (gridCols) => set({ gridCols }),
+  setLayoutMode: (layoutMode) => set({ layoutMode }),
+  notify: (message) => set({ notice: { message, at: Date.now() } }),
   })));
 
 type QaPredictionLike = Prediction & { answer: string };

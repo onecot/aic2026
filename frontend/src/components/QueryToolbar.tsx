@@ -6,7 +6,11 @@ import { useActiveQuery, useUiStore } from "../state/uiStore";
  * The task tabs live in SearchBar; this bar handles exact query switching,
  * creating queries, and Workspace/Submission navigation.
  */
-export function QueryToolbar() {
+interface QueryToolbarProps {
+  onOpenShortcuts?: () => void;
+}
+
+export function QueryToolbar({ onOpenShortcuts }: QueryToolbarProps) {
   const active = useActiveQuery();
   const queries = useUiStore((s) => s.queries);
   const queryOrder = useUiStore((s) => s.queryOrder);
@@ -41,6 +45,17 @@ export function QueryToolbar() {
       >
         + New query
       </button>
+
+      {onOpenShortcuts && (
+        <button
+          type="button"
+          onClick={onOpenShortcuts}
+          title="Xem bảng phím tắt (?)"
+          className="rounded border border-edge/80 px-2 py-0.5 text-xs text-dim hover:border-accent hover:text-ink transition-colors ml-1 flex items-center gap-1"
+        >
+          <span>⌨️</span> Phím tắt <span className="font-mono text-[10px] text-accent">?</span>
+        </button>
+      )}
 
       <div className="ml-auto flex gap-1" role="tablist" aria-label="View">
         {(["workspace", "submission"] as const).map((v) => (

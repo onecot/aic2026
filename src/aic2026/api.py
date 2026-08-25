@@ -137,10 +137,19 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=1000)
 
 
+class SimilarSearchRequest(BaseModel):
+    """Request body for ``POST /api/search/similar`` (Query-by-Image)."""
+
+    video_id: str
+    frame_index: int
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
 class SearchHit(BaseModel):
     """One ranked candidate exposed by the search endpoint."""
 
     rank: int
+    video_rank: int | None = None
     video_id: str
     frame_index: int
     keyframe_ordinal: int
@@ -242,15 +251,16 @@ class HealthResponse(BaseModel):
     frame_catalog: bool
 
 
-def _hit(candidate: RetrievalCandidate) -> SearchHit:
+def _hit(candidate: RetrievalCandidate, video_rank: int | None = None) -> SearchHit:
     """Serialize one retrieval candidate for the search response."""
     return SearchHit(
         rank=candidate.rank,
+        video_rank=video_rank,
         video_id=candidate.video_id,
         frame_index=candidate.frame_index,
         keyframe_ordinal=candidate.keyframe_ordinal,
         pts_time=float(candidate.pts_time),
-        score=float(candidate.score),
+        score=float(candidate.score) if candidate.score is not None else 0.0,
     )
 
 
@@ -391,6 +401,11 @@ def create_app(
                     if keyframes_root is not None
                     else (config if config is not None else load_config()).data_keyframes_dir
                 )
+                try:
+                    # Warmup model so the very first user search is instant
+                    svc.search_timed("warmup", limit=1)
+                except Exception:
+                    pass
                 app.state.ready = True
             except Exception as exc:  # noqa: BLE001 - clear startup failure
                 logger.error("Backend startup failed: %s: %s", type(exc).__name__, exc)
@@ -443,6 +458,14 @@ def create_app(
         raise HTTPException(status_code=422, detail="invalid request body")
 
     # ------------------------------------------------------------ endpoints
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {
+            "name": "AIC 2026 Retrieval API",
+            "docs": "/docs",
+            "ui": "http://localhost:5173",
+        }
+
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> Any:
         ready: bool = bool(getattr(app.state, "ready", False))
@@ -478,8 +501,12 @@ def create_app(
             from aic2026.text_query import TextQuery
             from aic2026.trake import search_trake
 
+            q_text = payload.query.strip()
+            if not ("(1)" in q_text or "E1:" in q_text or "E1 :" in q_text):
+                q_text = f"(1) {q_text}"
+
             result = search_trake(
-                retrieval.engine, TextQuery(query_id="api-query", query_text=payload.query),
+                retrieval.engine, TextQuery(query_id="api-query", query_text=q_text),
                 top_k=payload.limit,
             )
             events = [
@@ -512,7 +539,12 @@ def create_app(
             payload.query, payload.limit
         )
         total_ms = (time.perf_counter() - total_start) * 1000.0
-        hits = [_hit(candidate) for candidate in candidates]
+        seen_videos: dict[str, int] = {}
+        hits = []
+        for candidate in candidates:
+            if candidate.video_id not in seen_videos:
+                seen_videos[candidate.video_id] = len(seen_videos) + 1
+            hits.append(_hit(candidate, video_rank=seen_videos[candidate.video_id]))
         meta = MetaPayload(
             **build_search_meta(
                 task="kis",
@@ -523,6 +555,39 @@ def create_app(
             )
         )
         return SearchResponse(query=payload.query, results=hits, meta=meta)
+
+    @app.post("/api/search/similar", response_model=SearchResponse)
+    def search_similar(payload: SimilarSearchRequest) -> SearchResponse:
+        _require_ready()
+        retrieval: RetrievalService = app.state.retrieval
+        total_start = time.perf_counter()
+        try:
+            candidates = list(
+                retrieval.engine.search_similar(
+                    payload.video_id, payload.frame_index, top_k=payload.limit
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        seen_videos: dict[str, int] = {}
+        hits = []
+        for candidate in candidates:
+            if candidate.video_id not in seen_videos:
+                seen_videos[candidate.video_id] = len(seen_videos) + 1
+            hits.append(_hit(candidate, video_rank=seen_videos[candidate.video_id]))
+        meta = MetaPayload(
+            **build_search_meta(
+                task="kis",
+                returned=len(hits),
+                total_ms=total_ms,
+            )
+        )
+        return SearchResponse(
+            query=f"similar:{payload.video_id}:{payload.frame_index}",
+            results=hits,
+            meta=meta,
+        )
 
     @app.get("/api/videos/{video_id}", response_model=VideoMetadataResponse)
     def video_metadata(video_id: str) -> VideoMetadataResponse:
@@ -570,7 +635,11 @@ def create_app(
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="frame image not available") from None
         media_type = _IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
-        return FileResponse(path, media_type=media_type)
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     return app
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FrameRecord } from "../api/types";
+import type { FrameRecord, SearchHit } from "../api/types";
 import { MAX_PREDICTIONS, type TrakePrediction } from "./submission";
 import { initialUiState, useUiStore } from "./uiStore";
 
@@ -15,6 +15,17 @@ const hit = {
   keyframeOrdinal: 12,
   ptsTime: 24.2,
 };
+
+function searchHit(videoId: string, frameIndex: number, rank = 1): SearchHit {
+  return {
+    rank,
+    video_id: videoId,
+    frame_index: frameIndex,
+    keyframe_ordinal: rank,
+    pts_time: rank * 0.5,
+    score: 1 - rank * 0.01,
+  };
+}
 
 function freshSession() {
   useUiStore.setState({ ...initialUiState() });
@@ -38,13 +49,12 @@ describe("query workspaces", () => {
     expect(useUiStore.getState().queries["Q02"]?.task).toBe("trake");
   });
 
-  it("switching queries restores that query's draft, search, and queue", () => {
+  it("switching queries restores that query's draft, search, and predictions", () => {
     freshSession();
     const s = useUiStore.getState();
     s.setDraftQuery("red boat");
     s.submitSearch();
-    s.selectFrame(hit);
-    s.addPredictionFromSelected();
+    s.syncPredictionsFromSearch([searchHit("L21_V001", 606)]);
 
     const q2 = s.newQuery("qa");
     expect(useUiStore.getState().selected).toBeNull();
@@ -109,56 +119,39 @@ describe("selection + temporal navigation", () => {
   });
 });
 
-describe("prediction queue", () => {
-  it("adds predictions in user order from the inspected frame", () => {
-    freshSession();
-    const s = useUiStore.getState();
-    s.selectFrame(hit);
-    expect(s.addPredictionFromSelected()).toBe(true);
-    s.selectFrame({ ...hit, videoId: "L22_V009", frameIndex: 42 });
-    s.addPredictionFromSelected();
-
-    const predictions = useUiStore.getState().queries["Q01"]!.predictions;
-    expect(predictions.map((p) => ("frameIndex" in p ? p.frameIndex : -1))).toEqual([606, 42]);
-  });
-
-  it("rejects duplicate predictions without changing order", () => {
-    freshSession();
-    const s = useUiStore.getState();
-    s.selectFrame(hit);
-    s.addPredictionFromSelected();
-    s.selectFrame({ ...hit, videoId: "L22_V009", frameIndex: 42 });
-    s.addPredictionFromSelected();
-
-    s.selectFrame(hit); // duplicate
-    expect(s.addPredictionFromSelected()).toBe(false);
-    const predictions = useUiStore.getState().queries["Q01"]!.predictions;
-    expect(predictions).toHaveLength(2);
-    expect(predictions[0]).toMatchObject({ videoId: "L21_V001" });
-    expect(useUiStore.getState().notice?.message).toMatch(/Already added/);
-  });
-
-  it("blocks the 101st prediction with a clear notice, never truncating", () => {
-    freshSession();
-    const s = useUiStore.getState();
-    for (let i = 0; i < MAX_PREDICTIONS; i += 1) {
-      s.selectFrame({ videoId: `V${i}`, frameIndex: i });
-      expect(s.addPredictionFromSelected()).toBe(true);
-    }
-    s.selectFrame({ videoId: "OVERFLOW", frameIndex: 999 });
-    expect(s.addPredictionFromSelected()).toBe(false);
+describe("kis/qa predictions come from the displayed search grid", () => {
+  it("syncPredictionsFromSearch replaces predictions in rank order, capped at MAX_PREDICTIONS", () => {
+    freshSession(); // Q01, kis
+    const hits = Array.from({ length: MAX_PREDICTIONS + 10 }, (_, i) => searchHit(`V${i}`, i, i + 1));
+    useUiStore.getState().syncPredictionsFromSearch(hits);
     const predictions = useUiStore.getState().queries["Q01"]!.predictions;
     expect(predictions).toHaveLength(MAX_PREDICTIONS);
-    expect(useUiStore.getState().notice?.message).toMatch(/max 100/);
+    expect(predictions[0]).toMatchObject({ videoId: "V0", frameIndex: 0, score: hits[0]!.score });
+  });
+
+  it("seeds an empty answer per row for qa queries", () => {
+    freshSession();
+    const s = useUiStore.getState();
+    s.newQuery("qa"); // Q02 active
+    s.syncPredictionsFromSearch([searchHit("A", 1), searchHit("B", 2)]);
+    const predictions = useUiStore.getState().queries["Q02"]!.predictions;
+    expect(predictions).toEqual([
+      { videoId: "A", frameIndex: 1, score: expect.any(Number), answer: "" },
+      { videoId: "B", frameIndex: 2, score: expect.any(Number), answer: "" },
+    ]);
+  });
+
+  it("is a no-op for trake queries", () => {
+    freshSession();
+    useUiStore.getState().newQuery("trake"); // Q02 active
+    useUiStore.getState().syncPredictionsFromSearch([searchHit("A", 1)]);
+    expect(useUiStore.getState().queries["Q02"]!.predictions).toHaveLength(0);
   });
 
   it("removes by index and moves rows up/down", () => {
     freshSession();
     const s = useUiStore.getState();
-    [1, 2, 3].forEach((n) => {
-      s.selectFrame({ videoId: `V${n}`, frameIndex: n });
-      s.addPredictionFromSelected();
-    });
+    s.syncPredictionsFromSearch([searchHit("V1", 1), searchHit("V2", 2), searchHit("V3", 3)]);
     s.movePrediction(2, -1); // V3 moves up
     let predictions = useUiStore.getState().queries["Q01"]!.predictions;
     expect(predictions.map((p) => ("videoId" in p ? p.videoId : ""))).toEqual(["V1", "V3", "V2"]);
@@ -171,6 +164,26 @@ describe("prediction queue", () => {
     expect(predictions.map((p) => ("videoId" in p ? p.videoId : ""))).toEqual(["V1", "V2"]);
   });
 
+  it("reorderPrediction moves an item to an arbitrary target index", () => {
+    freshSession();
+    const s = useUiStore.getState();
+    s.syncPredictionsFromSearch([searchHit("V1", 1), searchHit("V2", 2), searchHit("V3", 3)]);
+    s.reorderPrediction(0, 2); // V1 moves to the end
+    let predictions = useUiStore.getState().queries["Q01"]!.predictions;
+    expect(predictions.map((p) => ("videoId" in p ? p.videoId : ""))).toEqual(["V2", "V3", "V1"]);
+
+    s.reorderPrediction(0, 0); // no-op: same index
+    predictions = useUiStore.getState().queries["Q01"]!.predictions;
+    expect(predictions.map((p) => ("videoId" in p ? p.videoId : ""))).toEqual(["V2", "V3", "V1"]);
+
+    s.reorderPrediction(-1, 1); // no-op: out of range
+    s.reorderPrediction(0, 99); // no-op: out of range
+    predictions = useUiStore.getState().queries["Q01"]!.predictions;
+    expect(predictions.map((p) => ("videoId" in p ? p.videoId : ""))).toEqual(["V2", "V3", "V1"]);
+  });
+});
+
+describe("TRAKE anchor suggestions", () => {
   it("adds the TRAKE window as an editable initial suggestion only", () => {
     freshSession();
     useUiStore.getState().newQuery("trake"); // Q02
@@ -271,10 +284,7 @@ describe("QA answers are per-prediction", () => {
     freshSession();
     const s = useUiStore.getState();
     s.newQuery("qa"); // Q02 active
-    s.selectFrame({ ...hit, videoId: "A" });
-    s.addPredictionFromSelected();
-    s.selectFrame({ ...hit, videoId: "B" });
-    s.addPredictionFromSelected();
+    s.syncPredictionsFromSearch([searchHit("A", 1), searchHit("B", 2)]);
 
     useUiStore.getState().setQaAnswer("Q02", 1, "Bát Tràng");
     const predictions = useUiStore.getState().queries["Q02"]!.predictions;

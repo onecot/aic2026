@@ -101,6 +101,19 @@ export async function search(
   });
 }
 
+/** POST /api/search/similar (Query-by-Image visual similarity search) */
+export async function searchSimilar(
+  body: { video_id: string; frame_index: number; limit?: number },
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
+  return requestJson<SearchResponse>("/api/search/similar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
 /** GET /api/videos/{video_id} */
 export function getVideo(videoId: string, signal?: AbortSignal): Promise<VideoMetadata> {
   return requestJson<VideoMetadata>(

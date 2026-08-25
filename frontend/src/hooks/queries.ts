@@ -6,7 +6,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, getFrames, getSystem, getVideo, health, search } from "../api/client";
-import type { FramesAroundParams } from "../api/types";
+import type { FramesAroundParams, FramesPageParams } from "../api/types";
 import { backendTask, useUiStore } from "../state/uiStore";
 
 export type BackendStatus = "loading" | "ready" | "starting" | "unavailable";
@@ -104,20 +104,26 @@ export function useVideo(videoId: string | null) {
   });
 }
 
-/** GET /api/videos/{video_id}/frames around the inspected keyframe. */
+/** GET /api/videos/{video_id}/frames around the inspected keyframe or paginated. */
 export function useTemporalFrames(
   videoId: string | null,
-  params: FramesAroundParams | null,
+  params: FramesAroundParams | FramesPageParams | null,
 ) {
+  const center = params && "center" in params ? params.center : null;
+  const radius = params && "radius" in params ? params.radius : null;
+  const offset = params && "offset" in params ? params.offset : null;
+  const limit = params?.limit ?? null;
+
   return useQuery({
     queryKey: [
       "frames",
       videoId,
-      params?.center ?? null,
-      params?.radius ?? null,
-      params?.limit ?? null,
+      center,
+      radius,
+      offset,
+      limit,
     ],
-    queryFn: ({ signal }) => getFrames(videoId as string, params as FramesAroundParams, signal),
+    queryFn: ({ signal }) => getFrames(videoId as string, params as FramesAroundParams | FramesPageParams, signal),
     enabled: videoId !== null && params !== null,
     staleTime: Infinity,
     placeholderData: (previous) => previous,

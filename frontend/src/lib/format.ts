@@ -22,6 +22,7 @@ export function formatSeconds(seconds: number): string {
 }
 
 /** Score -> fixed 3-decimals string without sign noise. */
-export function formatScore(score: number): string {
-  return score.toFixed(3);
+export function formatScore(score?: number | null): string {
+  if (score === null || score === undefined || Number.isNaN(Number(score))) return "-";
+  return Number(score).toFixed(3);
 }

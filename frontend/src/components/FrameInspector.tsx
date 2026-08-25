@@ -10,10 +10,11 @@ export const TEMPORAL_LIMIT = 25;
 
 /**
  * Large view of the selected frame with metadata and temporal controls.
- * The primary action adds the frame to the active query's prediction queue
- * (KIS/QA); TRAKE sequences are assembled from window cards instead.
+ * KIS/QA predictions come straight from search results (edited in the
+ * results grid); TRAKE sequences are still assembled from window cards
+ * here via anchor picking.
  */
-export function FrameInspector({ onSelectPrimary }: { onSelectPrimary: () => void }) {
+export function FrameInspector() {
   const selected = useUiStore((s) => s.selected);
   const stepTemporal = useUiStore((s) => s.stepTemporal);
   const clearInspector = useUiStore((s) => s.clearInspector);
@@ -51,8 +52,6 @@ export function FrameInspector({ onSelectPrimary }: { onSelectPrimary: () => voi
       ? -1
       : activeQuery.predictions.findIndex((p) => predictionKey(task, p) === currentKey);
   const added = addedIndex !== -1;
-
-  const primaryLabel = added ? "Added ✓" : "Add prediction";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3">
@@ -102,39 +101,30 @@ export function FrameInspector({ onSelectPrimary }: { onSelectPrimary: () => voi
         >
           Next ▶
         </button>
-        {task !== "trake" ? (
-          <button
-            type="button"
-            onClick={onSelectPrimary}
-            disabled={added}
-            title={added ? "Already in the queue" : `Add to ${activeQuery.id} queue`}
-            className={`ml-auto rounded px-3 py-1 text-xs font-medium ${
-              added ? "border border-accent text-accent" : "bg-accent text-black"
-            }`}
-          >
-            {primaryLabel}
-          </button>
-        ) : pick !== null && selected !== null ? (
-          <button
-            type="button"
-            onClick={() =>
-              setTraKeAnchor(activeQuery.id, pick.predictionIndex, pick.eventIndex, selected.frameIndex)
-            }
-            title="Replace this event's anchor with the inspected frame"
-            className="ml-auto rounded bg-accent px-3 py-1 text-xs font-medium text-black"
-          >
-            Set as Event {pick.eventIndex + 1}
-          </button>
-        ) : (
-          <span className="ml-auto text-xs text-dim">
-            “Choose” an event slot in the queue to set its frame here.
-          </span>
-        )}
+        {task === "trake" &&
+          (pick !== null && selected !== null ? (
+            <button
+              type="button"
+              onClick={() =>
+                setTraKeAnchor(activeQuery.id, pick.predictionIndex, pick.eventIndex, selected.frameIndex)
+              }
+              title="Replace this event's anchor with the inspected frame"
+              className="ml-auto rounded bg-accent px-3 py-1 text-xs font-medium text-black"
+            >
+              Set as Event {pick.eventIndex + 1}
+            </button>
+          ) : (
+            <span className="ml-auto text-xs text-dim">
+              “Choose” an event slot in the queue to set its frame here.
+            </span>
+          ))}
         <button
           type="button"
           onClick={() => removePrediction(addedIndex)}
           disabled={!added}
-          className="rounded border border-edge px-2 py-1 text-xs text-dim enabled:hover:border-red-500 enabled:hover:text-red-400 disabled:opacity-30"
+          className={`rounded border border-edge px-2 py-1 text-xs text-dim enabled:hover:border-red-500 enabled:hover:text-red-400 disabled:opacity-30 ${
+            task === "trake" ? "" : "ml-auto"
+          }`}
         >
           Remove prediction
         </button>

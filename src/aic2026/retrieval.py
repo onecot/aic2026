@@ -66,6 +66,13 @@ class IndexRetriever:
         """The directory of the loaded index artifact."""
         return self._artifact_dir
 
+    def get_frame_embedding(self, video_id: str, frame_index: int) -> np.ndarray | None:
+        """Find the indexed embedding vector for a given video_id and frame_index."""
+        for idx, frame in enumerate(self._frames):
+            if frame.keyframe.video_id.value == video_id and frame.frame_index == frame_index:
+                return np.asarray(self._embeddings[idx])
+        return None
+
 
     def search(
         self, query_vector: Sequence[float] | np.ndarray | Embedding, top_k: int = 10
@@ -115,8 +122,8 @@ class IndexRetriever:
         if query_norm == 0.0:
             raise ValueError("query_vector must have non-zero L2 norm")
 
-        dots = self._embeddings.astype(np.float32) @ query32
-        denom = self._norms.astype(np.float32) * np.float32(query_norm)
+        dots = self._embeddings.astype(np.float32, copy=False) @ query32
+        denom = self._norms.astype(np.float32, copy=False) * np.float32(query_norm)
         scores = np.divide(
             dots,
             denom,
@@ -125,10 +132,17 @@ class IndexRetriever:
         )
 
         n = self._manifest.num_rows
-        order = np.lexsort((np.arange(n, dtype=np.int64), -scores))
         k = min(top_k, n)
+        if k < n:
+            # Partition-select the k highest scores in O(n) instead of
+            # sorting all n rows in O(n log n); only the k selected rows
+            # need the secondary (tie-break) sort below.
+            top_idx = np.argpartition(-scores, k - 1)[:k]
+        else:
+            top_idx = np.arange(n, dtype=np.int64)
+        order = top_idx[np.lexsort((top_idx, -scores[top_idx]))]
         out: list[RetrievalCandidate] = []
-        for rank, row_idx in enumerate(order[:k], start=1):
+        for rank, row_idx in enumerate(order, start=1):
             frame = self._frames[int(row_idx)]
             out.append(
                 RetrievalCandidate(
