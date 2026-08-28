@@ -226,6 +226,13 @@ class JinaClipEncoder:
         self._config = config
         self._torch, transformers = _load_dependencies()
         self._device = _resolve_device(config.device, self._torch)
+        if "cpu" in str(self._device):
+            import os
+
+            try:
+                self._torch.set_num_threads(max(1, min(8, os.cpu_count() or 4)))
+            except Exception:
+                pass
         self._model = transformers.AutoModel.from_pretrained(
             config.pretrained,
             trust_remote_code=True,

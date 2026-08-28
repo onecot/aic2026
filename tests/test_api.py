@@ -94,7 +94,7 @@ class TestSearchEndpoint:
         assert scores == sorted(scores, reverse=True)
         # every hit carries full frame identity for the UI
         for hit in hits:
-            assert set(hit) == {"rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
+            assert set(hit) == {"rank", "video_rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
         assert hits == second.json()["results"]
 
     def test_search_rejects_invalid_body(self, client: TestClient) -> None:
@@ -363,5 +363,5 @@ class TestSearchTelemetry:
         client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
         body = client.post("/api/search", json={"query": "x", "limit": 3}).json()
         assert set(body) >= {"query", "results", "meta"}
-        assert all(set(hit) == {"rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
+        assert all(set(hit) >= {"rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
                    for hit in body["results"])

@@ -24,6 +24,8 @@ from aic2026.index_artifact import IndexManifest
 from aic2026.retrieval import IndexRetriever, RetrievalCandidate
 from aic2026.task_support import require_compatible_spaces, search_candidates
 
+import numpy as np
+
 
 class SearchEngine:
     """One encoder bound to one index artifact for candidate retrieval.
@@ -228,3 +230,29 @@ class SearchEngine:
               strict mode.
         """
         return self.search_embedding(self.encode_query(text), top_k=top_k)
+
+    def search_similar(
+        self, video_id: str, frame_index: int, *, top_k: int | None = None
+    ) -> tuple[RetrievalCandidate, ...]:
+        """Find visually similar keyframes using the embedding of an indexed frame.
+
+        Expected input:
+            - video_id: canonical video id of the query frame.
+            - frame_index: original-video frame index of the query frame.
+            - top_k: optional per-call cutoff; defaults to the engine's.
+
+        Returns:
+            - Ranked retrieval candidates in descending score order.
+
+        Raises:
+            - ValueError: if the frame is not found in the index.
+        """
+        vec = self._retriever.get_frame_embedding(video_id, frame_index)
+        if vec is None:
+            raise ValueError(f"Frame {video_id}:{frame_index} not found in index")
+        emb = Embedding(
+            kind="image",
+            vector=np.asarray(vec, dtype=np.float32),
+            space=self._retriever.manifest.embedding_space,
+        )
+        return self.search_embedding(emb, top_k=top_k)

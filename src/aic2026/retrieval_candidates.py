@@ -391,8 +391,16 @@ def build_window_candidates(
     for video_id, frames in frames_by_video.items():
         by_index = sorted(frames, key=lambda candidate: candidate.frame_index)
         indices = [candidate.frame_index for candidate in by_index]
+        # Windows are contiguous, non-overlapping ranges over this same
+        # sorted list, so a single forward-advancing pointer maps each
+        # window to its member candidates in one O(M) pass instead of
+        # rescanning the whole per-video list for every window.
+        pos = 0
         for start, end in group_windows(indices, max_gap):
-            in_window = [candidate for candidate in by_index if start <= candidate.frame_index <= end]
+            window_start = pos
+            while pos < len(by_index) and by_index[pos].frame_index <= end:
+                pos += 1
+            in_window = by_index[window_start:pos]
             score = max(float(candidate.score) for candidate in in_window)
             windows.append(
                 WindowCandidate(

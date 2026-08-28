@@ -66,6 +66,24 @@ class IndexRetriever:
         """The directory of the loaded index artifact."""
         return self._artifact_dir
 
+    def get_frame_embedding(self, video_id: str, frame_index: int) -> np.ndarray | None:
+        """Find the indexed embedding vector for a given video_id and frame_index.
+
+        Expected input:
+            - video_id: canonical video identifier.
+            - frame_index: original-video frame index.
+
+        Returns:
+            - The embedding vector if the frame is indexed, otherwise None.
+
+        Raises:
+            - No exceptions.
+        """
+        for idx, frame in enumerate(self._frames):
+            if frame.keyframe.video_id.value == video_id and frame.frame_index == frame_index:
+                return np.asarray(self._embeddings[idx])
+        return None
+
 
     def search(
         self, query_vector: Sequence[float] | np.ndarray | Embedding, top_k: int = 10
@@ -115,8 +133,8 @@ class IndexRetriever:
         if query_norm == 0.0:
             raise ValueError("query_vector must have non-zero L2 norm")
 
-        dots = self._embeddings.astype(np.float32) @ query32
-        denom = self._norms.astype(np.float32) * np.float32(query_norm)
+        dots = self._embeddings.astype(np.float32, copy=False) @ query32
+        denom = self._norms.astype(np.float32, copy=False) * np.float32(query_norm)
         scores = np.divide(
             dots,
             denom,
@@ -125,10 +143,38 @@ class IndexRetriever:
         )
 
         n = self._manifest.num_rows
-        order = np.lexsort((np.arange(n, dtype=np.int64), -scores))
         k = min(top_k, n)
+        if k < n:
+            # Partition-select top-k in O(n) while preserving exact ranking
+            # and tie-breaking semantics of the full lexsort.
+            # We cannot rely solely on argpartition due to ties at the
+            # cutoff: argpartition may return arbitrary tied indices. So
+            # we handle the threshold explicitly.
+            kth_score = -np.partition(-scores, k - 1)[k - 1]
+            # Use exact float equality for threshold comparison (scores
+            # are deterministic float32 computations).
+            greater_mask = scores > kth_score
+            equal_mask = scores == kth_score
+            greater_idx = np.where(greater_mask)[0]
+            equal_idx = np.where(equal_mask)[0]
+            # Number of equal-score slots we need after taking all greater
+            need_equal = k - int(greater_idx.size)
+            # Tie-break equal scores by original index (stable)
+            if need_equal > 0:
+                # equal_idx is already sorted ascending (np.where returns sorted)
+                equal_idx = equal_idx[:need_equal]
+                if greater_idx.size > 0:
+                    candidate_idx = np.concatenate((greater_idx, equal_idx))
+                else:
+                    candidate_idx = equal_idx
+            else:
+                candidate_idx = greater_idx
+            # Now sort the k candidates by (-score, original_index)
+            order = candidate_idx[np.lexsort((candidate_idx, -scores[candidate_idx]))]
+        else:
+            order = np.lexsort((np.arange(n, dtype=np.int64), -scores))[:k]
         out: list[RetrievalCandidate] = []
-        for rank, row_idx in enumerate(order[:k], start=1):
+        for rank, row_idx in enumerate(order, start=1):
             frame = self._frames[int(row_idx)]
             out.append(
                 RetrievalCandidate(
