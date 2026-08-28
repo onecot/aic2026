@@ -88,6 +88,7 @@ export interface UiState {
   movePrediction: (index: number, direction: -1 | 1) => void;
   setQaAnswer: (queryId: string, index: number, answer: string) => void;
   setSavedAt: (savedAt: number) => void;
+  notify: (message: string) => void;
 }
 
 function nextQueryId(queryOrder: string[]): string {
@@ -131,6 +132,7 @@ export function initialUiState(): Omit<
   | "movePrediction"
   | "setQaAnswer"
   | "setSavedAt"
+  | "notify"
 > {
   return {
     queries: {},
@@ -425,6 +427,7 @@ export const useUiStore = create<UiState>()(
     }),
 
   setSavedAt: (savedAt) => set({ savedAt }),
+  notify: (message) => set({ notice: { message, at: Date.now() } }),
   })));
 
 type QaPredictionLike = Prediction & { answer: string };

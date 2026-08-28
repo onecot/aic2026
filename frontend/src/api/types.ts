@@ -63,6 +63,7 @@ export interface SystemPayload {
 /** One ranked candidate (POST /api/search, KIS). */
 export interface SearchHit {
   rank: number;
+  video_rank?: number | null;
   video_id: string;
   frame_index: number;
   keyframe_ordinal: number;

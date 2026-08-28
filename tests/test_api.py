@@ -365,3 +365,60 @@ class TestSearchTelemetry:
         assert set(body) >= {"query", "results", "meta"}
         assert all(set(hit) >= {"rank", "video_id", "frame_index", "keyframe_ordinal", "pts_time", "score"}
                    for hit in body["results"])
+
+
+class TestSimilarSearchEndpoint:
+    def test_similar_returns_ranked_candidates(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        # Pick a known frame from the synthetic index: engine's first frame is L21_V001: frame 0? Use retriever directly.
+        from aic2026.api import create_app
+
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        # Discover one valid (video_id, frame_index) from the engine's retriever
+        retriever = engine.retriever
+        first_frame = retriever._frames[0]  # type: ignore[attr-defined]
+        video_id = first_frame.keyframe.video_id.value
+        frame_index = first_frame.frame_index
+        payload = {"video_id": video_id, "frame_index": frame_index, "limit": 5}
+        response = client.post("/api/search/similar", json=payload)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["query"] == f"similar:{video_id}:{frame_index}"
+        hits = body["results"]
+        assert len(hits) == 5
+        assert [h["rank"] for h in hits] == [1, 2, 3, 4, 5]
+        assert [h["video_rank"] for h in hits] is not None
+        # video_rank should be 1 for first distinct video, increasing
+        seen: set[str] = set()
+        expected_video_rank = 1
+        for hit in hits:
+            vid = hit["video_id"]
+            if vid not in seen:
+                seen.add(vid)
+                assert hit["video_rank"] == expected_video_rank
+                expected_video_rank += 1
+            # score present
+            assert isinstance(hit["score"], float)
+        # does not write artifacts
+        assert body["meta"]["task"] == "kis"
+
+    def test_similar_unknown_frame_returns_404(self, engine: SearchEngine, keyframes_root: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        payload = {"video_id": "UNKNOWN_V999", "frame_index": 999999, "limit": 5}
+        response = client.post("/api/search/similar", json=payload)
+        assert response.status_code == 404
+
+    def test_similar_does_not_write_prediction_artifacts(self, engine: SearchEngine, keyframes_root: Path, tmp_path: Path) -> None:
+        client = TestClient(create_app(engine=engine, catalog=FrameCatalog.from_keyframes_root(keyframes_root)))
+        before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+        first_frame = engine.retriever._frames[0]  # type: ignore[attr-defined]
+        payload = {"video_id": first_frame.keyframe.video_id.value, "frame_index": first_frame.frame_index, "limit": 3}
+        response = client.post("/api/search/similar", json=payload)
+        assert response.status_code == 200
+        after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+        assert before == after
+
+    def test_frame_image_has_immutable_cache_control(self, client: TestClient) -> None:
+        # Use known frame from catalog fixture: L21_V001 / 400
+        response = client.get(f"/api/frames/{CATALOG_VIDEO}/400")
+        assert response.status_code == 200
+        assert response.headers.get("Cache-Control") == "public, max-age=31536000, immutable"

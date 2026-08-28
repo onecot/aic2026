@@ -15,7 +15,6 @@ function formatClock(ms: number): string {
 /** Persistent bottom panel: the active query's prediction queue. */
 export function PredictionQueue() {
   const query = useActiveQuery();
-  const notice = useUiStore((s) => s.notice);
   const savedAt = useUiStore((s) => s.savedAt);
   const selectFrame = useUiStore((s) => s.selectFrame);
   const removePrediction = useUiStore((s) => s.removePrediction);
@@ -26,6 +25,9 @@ export function PredictionQueue() {
   const setTraKeAnchor = useUiStore((s) => s.setTraKeAnchor);
 
   // Auto-clear transient notices (limit reached, duplicate add).
+  // Visual display is via global Toast; timer still clears the store so
+  // subsequent identical notices can be re-triggered.
+  const notice = useUiStore((s) => s.notice);
   useEffect(() => {
     if (notice === null) return;
     const timer = window.setTimeout(() => {
@@ -49,11 +51,6 @@ export function PredictionQueue() {
         {savedAt !== null && (
           <span className="ml-auto text-dim" role="status">
             Saved · last saved {formatClock(savedAt)}
-          </span>
-        )}
-        {notice !== null && (
-          <span className={`${savedAt !== null ? "" : "ml-auto"} text-accent`} role="alert">
-            {notice.message}
           </span>
         )}
       </header>

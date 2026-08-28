@@ -13,7 +13,15 @@ export const TEMPORAL_LIMIT = 25;
  * The primary action adds the frame to the active query's prediction queue
  * (KIS/QA); TRAKE sequences are assembled from window cards instead.
  */
-export function FrameInspector({ onSelectPrimary }: { onSelectPrimary: () => void }) {
+export function FrameInspector({
+  onSelectPrimary,
+  onFindSimilar,
+  onBrowseVideo,
+}: {
+  onSelectPrimary: () => void;
+  onFindSimilar?: (videoId: string, frameIndex: number) => void;
+  onBrowseVideo?: (videoId: string) => void;
+}) {
   const selected = useUiStore((s) => s.selected);
   const stepTemporal = useUiStore((s) => s.stepTemporal);
   const clearInspector = useUiStore((s) => s.clearInspector);
@@ -85,6 +93,28 @@ export function FrameInspector({ onSelectPrimary }: { onSelectPrimary: () => voi
             : []),
         ]}
       />
+      <div className="flex gap-2 pt-1">
+        {onFindSimilar && (
+          <button
+            type="button"
+            onClick={() => onFindSimilar(selected.videoId, selected.frameIndex)}
+            title="Find visually similar frames (does not modify submission)"
+            className="rounded border border-edge px-2 py-1 text-xs hover:border-accent"
+          >
+            Find similar
+          </button>
+        )}
+        {onBrowseVideo && (
+          <button
+            type="button"
+            onClick={() => onBrowseVideo(selected.videoId)}
+            title="Browse all indexed frames of this video"
+            className="rounded border border-edge px-2 py-1 text-xs hover:border-accent"
+          >
+            Browse video
+          </button>
+        )}
+      </div>
       <div className="mt-auto flex gap-2 pt-1">
         <button
           type="button"
